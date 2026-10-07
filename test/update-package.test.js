@@ -154,6 +154,42 @@ function extract(zipPath, dir) {
   });
 }
 
+const u16 = (n) => Buffer.from([n & 0xff, (n >> 8) & 0xff]);
+const u32 = (n) => Buffer.from([n & 0xff, (n >> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]);
+/**
+ * A stored zip whose name bytes are a legacy code page (general-purpose bit 11 clear), with the
+ * UTF-8 name in each entry's Info-ZIP Unicode Path extra field — what a Windows `zip` writes.
+ * @param {[Buffer, string, Buffer][]} entries raw name bytes, UTF-8 name, file bytes
+ */
+function legacyNameZip(entries) {
+  let local = Buffer.alloc(0);
+  let central = Buffer.alloc(0);
+  let offset = 0;
+  for (const [raw, name, data] of entries) {
+    const crc = zlib.crc32(data) >>> 0;
+    const localHeader = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(raw.length), u16(0), raw, data,
+    ]);
+    const extra = Buffer.concat([
+      u16(0x7075), u16(5 + Buffer.byteLength(name)), Buffer.from([1]), u32(zlib.crc32(raw) >>> 0), Buffer.from(name, 'utf8'),
+    ]);
+    const centralHeader = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x01, 0x02]), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(raw.length), u16(extra.length), u16(0), u16(0), u16(0), u32(0), u32(offset),
+      raw, extra,
+    ]);
+    local = Buffer.concat([local, localHeader]);
+    central = Buffer.concat([central, centralHeader]);
+    offset += localHeader.length;
+  }
+  const eocd = Buffer.concat([
+    Buffer.from([0x50, 0x4b, 0x05, 0x06]), u16(0), u16(0), u16(entries.length), u16(entries.length),
+    u32(central.length), u32(local.length), u16(0),
+  ]);
+  return Buffer.concat([local, central, eocd]);
+}
+
 test('a whole update: base zip v9.9.8 → --update v9.9.9 ships only what changed, the boot step finishes it over the extracted base', { skip: !hasZipTool && 'no zip / tar' }, () => {
   const co = fakeCheckout('9.9.8');
   const out = tmp('out');
@@ -315,6 +351,20 @@ test('the zip reader: stored and deflated entries, zip64, UTF-8 names; damaged a
       if (!t.error && t.status === 0) zipped.push('plain.zip');
     }
     assert.ok(zipped.length > 0);
+    // a Windows zip: the name bytes are the machine's code page (bit 11 clear) and the UTF-8
+    // name rides in the Info-ZIP Unicode Path extra field
+    if (typeof zlib.crc32 === 'function') {
+      const legacy = path.join(dir, 'windows.zip');
+      fs.writeFileSync(legacy, legacyNameZip([
+        [Buffer.from('Stronghold-Protocol/package.json'), 'Stronghold-Protocol/package.json', Buffer.from('{"version":"0.2.0"}')],
+        [Buffer.concat([Buffer.from('Stronghold-Protocol/public/assets/'), Buffer.from([0xce, 0xc0, 0xca, 0xf9]), Buffer.from(' a.png')]),
+          'Stronghold-Protocol/public/assets/卫戍 a.png', Buffer.alloc(5000, 7)],
+        [Buffer.from('Stronghold-Protocol/server/empty.js'), 'Stronghold-Protocol/server/empty.js', Buffer.alloc(0)],
+      ]));
+      const w = readBase(legacy);
+      assert.deepEqual([...w.files.keys()].sort(), ['package.json', 'public/assets/卫戍 a.png', 'server/empty.js'], 'the Unicode Path extra field');
+      assert.deepEqual(w.files.get('public/assets/卫戍 a.png'), dg(Buffer.alloc(5000, 7)));
+    }
     for (const z of zipped) {
       const b = readBase(path.join(dir, z));
       assert.deepEqual([b.version, b.art, b.update], ['0.2.0', 1, false], z);

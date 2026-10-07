@@ -8,7 +8,9 @@
 // every later 0.2.x given as a base); `removed` lists the files some base shipped that the new version does not, with
 // the bytes each base had (the player's copy is deleted only when it still holds them). A removed path that differs
 // from a new one only in case is the same file on Windows / macOS: it is left out of `removed` (`caseOnly`).
-// The zip reader handles what tools/package.mjs and GitHub hand out: stored and deflated entries, zip64, UTF-8 names.
+// The zip reader handles what tools/package.mjs and GitHub hand out: stored and deflated entries, zip64, and names
+// in the encodings real zips use — the Info-ZIP Unicode Path extra field (what a Windows zip writes), general-purpose
+// bit 11, valid UTF-8, or the historical CP437 default.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -30,6 +32,55 @@ function readAt(fd, pos, len) {
 
 const SIG = { eocd: 0x06054b50, loc64: 0x07064b50, eocd64: 0x06064b50, central: 0x02014b50, local: 0x04034b50 };
 const U32 = 0xffffffff;
+const UTF8_NAME_FLAG = 0x800; // general-purpose bit 11: the name bytes are UTF-8
+const UNICODE_PATH_ID = 0x7075; // Info-ZIP Unicode Path extra field
+// The code points CP437 — the ZIP format's historical name encoding — maps 0x80–0xFF to.
+const CP437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0';
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let i = 0; i < 8; i++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+  return c >>> 0;
+});
+/** CRC-32 (zlib's native one when this Node has it, a table walk on the oldest Node 22). */
+const crc32 = (buf) => (typeof zlib.crc32 === 'function' ? zlib.crc32(buf) >>> 0 : slowCrc32(buf));
+function slowCrc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+/** CP437-decode bytes no UTF-8 path was found for. */
+function cp437(buf) {
+  let out = '';
+  for (const b of buf) out += b < 0x80 ? String.fromCharCode(b) : CP437[b - 0x80];
+  return out;
+}
+/**
+ * The UTF-8 name of an entry whose raw name is in the machine's legacy code page, from the central
+ * directory's Info-ZIP Unicode Path extra field (version 1, the raw name's CRC, then the UTF-8 name).
+ * @param {Buffer} raw the name bytes as stored in the header
+ * @param {Buffer} extra the entry's central-directory extra field
+ * @returns {string | null} null when there is no valid Unicode Path field
+ */
+function unicodePath(raw, extra) {
+  for (let q = 0; q + 4 <= extra.length;) {
+    const id = extra.readUInt16LE(q);
+    const len = extra.readUInt16LE(q + 2);
+    if (id === UNICODE_PATH_ID && len >= 5 && q + 4 + len <= extra.length && extra[q + 4] === 1
+      && extra.readUInt32LE(q + 5) === crc32(raw)) {
+      try { return strictUtf8.decode(extra.subarray(q + 9, q + 4 + len)); } catch { return null; }
+    }
+    q += 4 + len;
+  }
+  return null;
+}
+/** Decode a central-directory name: the Unicode Path field first, then bit 11 / valid UTF-8, then CP437. */
+function decodeName(raw, flags, extra) {
+  const unicode = unicodePath(raw, extra);
+  if (unicode !== null) return unicode;
+  if ((flags & UTF8_NAME_FLAG) !== 0) return raw.toString('utf8');
+  try { return strictUtf8.decode(raw); } catch { return cp437(raw); }
+}
 
 /**
  * Call `onFile(name, data)` for every file entry of a zip (directories skipped), in central-directory order.
@@ -73,10 +124,14 @@ export function readZip(zipPath, onFile) {
       const commentLen = cd.readUInt16LE(p + 32);
       const external = cd.readUInt32LE(p + 38);
       let offset = cd.readUInt32LE(p + 42);
-      const name = cd.toString('utf8', p + 46, p + 46 + nameLen);
+      const nameStart = p + 46;
+      const extraStart = nameStart + nameLen;
+      const rawName = cd.subarray(nameStart, extraStart);
+      const extra = cd.subarray(extraStart, extraStart + extraLen);
+      const name = decodeName(rawName, flags, extra);
       if (packedSize === U32 || rawSize === U32 || offset === U32) {
         // the zip64 extra field carries the values the header marks 0xFFFFFFFF, in this order
-        for (let q = p + 46 + nameLen, end = q + extraLen; q + 4 <= end;) {
+        for (let q = extraStart, end = q + extraLen; q + 4 <= end;) {
           const id = cd.readUInt16LE(q);
           const len = cd.readUInt16LE(q + 2);
           if (id === 1) {
