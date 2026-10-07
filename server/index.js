@@ -19,7 +19,9 @@
 //   * GET /healthz → JSON status (protocol `version`, release `app`, rooms, matches, sessions, sockets).
 //   * WebSocket (ws) at /ws, maxPayload 64 KB → server/net.js Network → server/lobby.js Lobby.
 //   * Env: PORT (default 3000), HOST (default 0.0.0.0), TRUST_PROXY ('auto' default: honour CF-Connecting-IP /
-//     X-Real-IP / X-Forwarded-For only from loopback/private peers such as a local cloudflared; '1' always; '0' never).
+//     X-Real-IP / X-Forwarded-For only from loopback/private peers such as a local cloudflared; '1' always; '0' never),
+//     FRONTEND_ORIGIN (the front-end domain allowed to read /healthz across origins; default '*' — the
+//     endpoint is public and carries no credentials).
 //     Prints LAN URLs on boot.
 //   * Per-network limits for internet clients (see net.js clientAddress; local/LAN peers are exempt): open sockets
 //     (maxConnectionsPerAddr, refused at upgrade with 429), rooms and running matches (lobby.js).
@@ -587,6 +589,17 @@ export function parseTrustProxy(v) {
   return 'auto';
 }
 
+/**
+ * The front-end origin allowed to read `/healthz` from another origin (CORS). '*' allows any front-end
+ * domain; the endpoint is public, carries no credentials and reveals only runtime counts.
+ * @param {string} [value] FRONTEND_ORIGIN (an http(s) origin, or empty for '*')
+ * @returns {string}
+ */
+export function parseFrontendOrigin(value = process.env.FRONTEND_ORIGIN) {
+  const origin = String(value ?? '').trim();
+  return origin || '*';
+}
+
 function makeLogger(quiet) {
   if (quiet) return noopLog;
   return {
@@ -607,6 +620,7 @@ function makeLogger(quiet) {
  *   ratePerSec?: number, rateBurst?: number, maxConnections?: number, maxRooms?: number,
  *   maxConnectionsPerAddr?: number, maxRoomsPerAddr?: number, maxMatchesPerAddr?: number, resyncMinGapMs?: number,
  *   heavyPerSec?: number, heavyBurst?: number, trustProxy?: 'auto' | boolean, soloReconnectWindowMs?: number,
+ *   frontendOrigin?: string,
  * }} [opts]
  * @returns {Promise<{ port: number, host: string, url: string, server: http.Server, wss: WebSocketServer,
  *                     lobby: Lobby, network: Network, registry: SessionRegistry, close: () => Promise<void> }>}
@@ -628,6 +642,7 @@ export async function startServer(opts = {}) {
     if (opts[k] != null) netOptions[k] = opts[k];
   }
   if (netOptions.trustProxy == null) netOptions.trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+  const frontendOrigin = parseFrontendOrigin(opts.frontendOrigin ?? process.env.FRONTEND_ORIGIN);
   const registry = new SessionRegistry({ reconnectWindowMs: netOptions.reconnectWindowMs ?? NET_DEFAULTS.reconnectWindowMs });
   const lobbyOptions = {};
   for (const k of ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs']) {
@@ -661,6 +676,8 @@ export async function startServer(opts = {}) {
       return;
     }
     if (parts.rawPath === '/healthz') {
+      res.setHeader('Access-Control-Allow-Origin', frontendOrigin);
+      if (frontendOrigin !== '*') res.setHeader('Vary', 'Origin');
       sendJson(req, res, 200, {
         ok: true, version: PROTOCOL_VERSION, app: APP_VERSION, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         // the runtime the server is serving right now (public/js/ui/buildGuard.js): a page whose own build is

@@ -1,6 +1,7 @@
 // WebSocket client for the game server (DESIGN §8).
 //
-// - One socket at ws(s)://<host>/ws, JSON text frames `{ t, ...payload }`.
+// - One socket at ws(s)://<host>/ws, or ws(s)://<BACKEND_ORIGIN>/ws when the front-end and
+//   back-end run on different domains (public/js/config.js). JSON text frames `{ t, ...payload }`.
 // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
 //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
 //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
@@ -31,6 +32,7 @@
 
 import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
+import { BACKEND_ORIGIN, backendWsUrl } from './config.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
@@ -92,11 +94,15 @@ export function backoffDelay(attempt, rand = Math.random) {
 }
 
 /**
- * WebSocket URL for the current page (`ws(s)://host/ws`).
+ * WebSocket URL for the current page (`ws(s)://host/ws`), or for the configured backend domain
+ * (`public/js/config.js` BACKEND_ORIGIN) when the front-end and back-end are deployed separately.
  * @param {{protocol: string, host: string}} [loc]
+ * @param {string} [origin] backend-origin override (defaults to BACKEND_ORIGIN)
  * @returns {string}
  */
-export function defaultWsUrl(loc = globalThis.location) {
+export function defaultWsUrl(loc = globalThis.location, origin = BACKEND_ORIGIN) {
+  const backend = backendWsUrl('/ws', origin);
+  if (backend) return backend;
   if (!loc || !loc.host) return 'ws://localhost:3000/ws';
   return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
 }
