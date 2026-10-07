@@ -116,11 +116,13 @@ function resolveOutput(out) {
   if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`--out must be inside the repository: ${outputDir}`);
   }
-  const top = rel.split(/[\\/]/)[0];
+  // Windows `relative()` joins segments with '\'; compare on forward slashes.
+  const posixRel = rel.split(/[\\/]/).join('/');
+  const top = posixRel.split('/')[0];
   if (PROTECTED_PATHS.includes(top)) {
     throw new Error(`--out must not overlap a source directory: ${rel}`);
   }
-  if (top === 'test' && !rel.startsWith(TEST_OUTPUT_PREFIX)) {
+  if (top === 'test' && !posixRel.startsWith(TEST_OUTPUT_PREFIX)) {
     throw new Error(`--out must not overlap test sources: ${rel}`);
   }
   return outputDir;
