@@ -17,7 +17,7 @@
 //   * Prep-side facts a battle needs (hand size, operators gained this round, teammates' bands …) arrive in
 //     `PlayerBattleInput.contentInfo`, written by the `global:contentb_info` meta handler (support/meta.js).
 
-import { getData } from '../../../data.js';
+import { getSimData } from '../../simdata.js';
 import { COLS, DIRECT_BONUS_STACKING } from '../../constants.js';
 import { frontOf, offsetTile } from '../../dir.js';
 import { bodyInKeys, bodyDist, bodyInRadius, bodyOnTile, bodyTileReach } from '../../body.js';
@@ -38,7 +38,7 @@ let DATA = null;
 /** Frozen data/*.json (process singleton of server/data.js). Never mutate. */
 export function gameData() {
   if (!DATA) {
-    try { DATA = getData({ log: QUIET }) || {}; } catch { DATA = {}; }
+    try { DATA = getSimData?.() || {}; } catch { DATA = {}; }
   }
   return DATA;
 }
