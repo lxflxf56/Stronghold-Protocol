@@ -4,7 +4,8 @@
 //   * a URL longer than 4096 characters → 414; one that does not parse → 400;
 //   * any method but GET / HEAD → 405 with `Allow: GET, HEAD`;
 //   * GET /healthz → JSON status (protocol `version`, release `app`, uptime, the served `build`, sockets, sessions,
-//     rooms, matches), never cached;
+//     rooms, matches), never cached; CORS `Access-Control-Allow-Origin: FRONTEND_ORIGIN` (default '*' — the
+//     endpoint carries no credentials) so a separated front-end domain can read it;
 //   * everything else → the static files (static.js).
 // A route that throws is logged and answers 500.
 
@@ -33,10 +34,10 @@ export function healthReport({ startedAt, network, registry, lobby }) {
  * The request listener for `http.createServer`.
  * @param {{ serveStatic: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse,
  *             rawPath: string, query: string) => Promise<void>,
- *           health: Parameters<typeof healthReport>[0], log: object }} deps
+ *           health: Parameters<typeof healthReport>[0], log: object, frontendOrigin?: string }} deps
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void}
  */
-export function createRequestHandler({ serveStatic, health, log }) {
+export function createRequestHandler({ serveStatic, health, log, frontendOrigin = '*' }) {
   async function handleRequest(req, res) {
     const url = req.url || '/';
     if (url.length > MAX_URL_LENGTH) { sendError(req, res, 414, '请求地址过长 · URI too long'); return; }
@@ -48,6 +49,8 @@ export function createRequestHandler({ serveStatic, health, log }) {
       return;
     }
     if (parts.rawPath === '/healthz') {
+      res.setHeader('Access-Control-Allow-Origin', frontendOrigin);
+      if (frontendOrigin !== '*') res.setHeader('Vary', 'Origin');
       sendJson(req, res, 200, healthReport(health));
       return;
     }

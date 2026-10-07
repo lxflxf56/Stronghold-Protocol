@@ -3,6 +3,8 @@
 //   * PORT (default 3000), HOST (default 0.0.0.0);
 //   * TRUST_PROXY ('auto' default: honour CF-Connecting-IP / X-Real-IP / X-Forwarded-For only from loopback/private
 //     peers such as a local cloudflared; '1' always; '0' never) → net.js trustProxy;
+//   * FRONTEND_ORIGIN (http(s) origin, default '*' — the /healthz endpoint is public and carries no credentials) →
+//     the CORS origin the request listener allows to read /healthz from another domain (front-end / back-end separation);
 //   * DEBUG → the console logger's debug level;
 //   * the served directories (public/, data/, shared/ and the content packs' packs/ of this repository unless the
 //     options name others), and which startServer() options are handed on to net.js Network and lobby.js Lobby.
@@ -71,6 +73,17 @@ export function parseTrustProxy(v) {
   if (['1', 'true', 'yes', 'on', 'always'].includes(s)) return true;
   if (['0', 'false', 'no', 'off', 'never'].includes(s)) return false;
   return 'auto';
+}
+
+/**
+ * The front-end origin allowed to read `/healthz` from another origin (CORS). '*' allows any front-end
+ * domain; the endpoint is public, carries no credentials and reveals only runtime counts.
+ * @param {string} [value] FRONTEND_ORIGIN (an http(s) origin, or empty for '*')
+ * @returns {string}
+ */
+export function parseFrontendOrigin(value = process.env.FRONTEND_ORIGIN) {
+  const origin = String(value ?? '').trim();
+  return origin || '*';
 }
 
 /** The console logger (`quiet` → silent; debug lines only with DEBUG set). */
