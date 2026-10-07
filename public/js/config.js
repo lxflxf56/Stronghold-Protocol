@@ -10,7 +10,7 @@
 // without changing the singleton.
 
 /** Configured game-server origin; empty means the front-end and back-end share one origin. */
-export const BACKEND_ORIGIN = 'https://stronghold-protocol.751396.xyz';
+export const BACKEND_ORIGIN = '';
 
 /**
  * Absolute backend URL for `path`, or `path` unchanged when no backend domain is configured.
