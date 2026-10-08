@@ -7,7 +7,9 @@
 //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
 //   so a background tab whose timers the browser throttles to ~1/min is not mistaken for dead.
 // - On every (re)connect, once a player name is known, sends `hello {name, token, version}`;
-//   the session is "online" after `welcome`.
+//   the session is "online" after `welcome`. The reconnect token is sent ONLY on the default
+//   backend that issued it: a `?server=` override points at a foreign server (config.js
+//   onDefaultBackend) and must never receive it.
 // - `request(t, fields)` adds a `rid` and resolves on the matching `ok` (or any reply carrying the
 //   rid), rejects with a NetError on `error` or after REQUEST_TIMEOUT_MS. Requests made while
 //   reconnecting are queued and flushed after `welcome` (still bound by their timeout).
@@ -33,7 +35,7 @@
 import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
 import { N_ } from '../../shared/i18n.js';
-import { backendWsUrl, effectiveBackendOrigin } from './config.js';
+import { backendWsUrl, effectiveBackendOrigin, onDefaultBackend } from './config.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
@@ -372,8 +374,12 @@ export class Net {
     if (!this.name) return;
     const rid = this._nextRid();
     const msg = { t: 'hello', rid, name: this.name, version: PROTOCOL_VERSION };
+    // The stored token is only meaningful — and only safe to send — on the default backend
+    // that issued it. On a `?server=` foreign backend it is skipped (fresh session instead).
     let token = null;
-    try { token = this.getToken(); } catch { token = null; }
+    if (onDefaultBackend()) {
+      try { token = this.getToken(); } catch { token = null; }
+    }
     if (typeof token === 'string' && token.length > 0 && token.length <= 64) msg.token = token;
     this._helloRid = rid;
     this._helloSentName = this.name;

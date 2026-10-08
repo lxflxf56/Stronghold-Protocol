@@ -74,6 +74,22 @@ export function effectiveBackendOrigin(search, loc = globalThis.location) {
 }
 
 /**
+ * Whether the backend this page connects to is the default one (`BACKEND_ORIGIN`, or the
+ * page's own origin in a single-origin deployment) — the only server whose stored reconnect
+ * token was issued. A `?server=` override that differs from it is a foreign backend: the
+ * token cannot resume a session there, so the client must never send it there (a fresh
+ * session is requested instead).
+ * @param {string} [search] a URL search string; defaults to the live page's
+ * @param {{origin?: string, search?: string}} [loc] page location
+ * @returns {boolean}
+ */
+export function onDefaultBackend(search, loc = globalThis.location) {
+  const eff = effectiveBackendOrigin(search, loc);
+  const def = BACKEND_ORIGIN || (loc?.origin || '');
+  return !eff || eff === def;
+}
+
+/**
  * The `?server=` value to embed in a shared link, or '' when this page is already on the default
  * backend — so a default-server link carries no param and its recipient is not forced onto a
  * different backend.

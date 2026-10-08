@@ -8,9 +8,9 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BACKEND_ORIGIN, backendUrl, backendWsUrl, SERVER_PARAM,
-  normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl,
+  normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl, onDefaultBackend,
 } from '../public/js/config.js';
-import { defaultWsUrl } from '../public/js/net.js';
+import { defaultWsUrl, Net } from '../public/js/net.js';
 import { fetchBuild } from '../public/js/ui/buildGuard.js';
 import { parseFrontendOrigin, startServer } from '../server/index.js';
 import { buildFrontend, isBrowserSimFile } from '../tools/build-frontend.mjs';
@@ -133,6 +133,13 @@ test('normalizeOrigin: http(s) origins only, strips path/auth; empty otherwise',
   assert.equal(normalizeOrigin('https://api.example.com/path'), 'https://api.example.com');
   assert.equal(normalizeOrigin('ftp://x.com'), '', 'non-http(s) scheme → default');
   assert.equal(normalizeOrigin('not-a-url'), '', 'relative / garbage → default');
+  assert.equal(normalizeOrigin('javascript:alert(1)'), '', 'script scheme → default');
+  assert.equal(normalizeOrigin('JAVASCRIPT:alert(1)'), '', 'uppercase script scheme → default');
+  assert.equal(normalizeOrigin('java\tscript:alert(1)'), '', 'control-char evasion → default (URL parser strips it, then rejects)');
+  assert.equal(normalizeOrigin('data:text/html,<script>alert(1)</script>'), '', 'data: URL → default');
+  assert.equal(normalizeOrigin('vbscript:msgbox(1)'), '', 'vbscript → default');
+  assert.equal(normalizeOrigin('blob:https://game.example.com/uuid'), '', 'blob: → default');
+  assert.equal(normalizeOrigin('https://api.example.com/any?path=1#frag'), 'https://api.example.com', 'path/query/hash never survive');
   assert.equal(normalizeOrigin(''), '', 'empty → default');
   assert.equal(normalizeOrigin('  https://api.example.com  '), 'https://api.example.com', 'trimmed first');
 });
@@ -144,6 +151,8 @@ test('parseServerParam: reads `?server=` only; valid http(s) origin or empty', (
   assert.equal(parseServerParam('?server='), '');
   assert.equal(parseServerParam('?server=not-a-url'), '');
   assert.equal(parseServerParam('?server=ftp://x.com'), '');
+  assert.equal(parseServerParam('?server=javascript:alert(1)'), '', 'script scheme → default');
+  assert.equal(parseServerParam('?server=data:text/html,<script>'), '', 'data: URL → default');
   assert.equal(parseServerParam('?server=https://api.example.com'), 'https://api.example.com');
   assert.equal(parseServerParam('?server=http://api.example.com:3001'), 'http://api.example.com:3001');
   assert.equal(parseServerParam('?server=https://api.example.com/path'), 'https://api.example.com');
@@ -194,6 +203,53 @@ test('net: defaultWsUrl follows a ?server= override and falls back to the page o
   assert.equal(defaultWsUrl(page('?server=https://api.example.com')), 'wss://api.example.com/ws');
   assert.equal(defaultWsUrl(page('?server=http://api.example.com:3001')), 'ws://api.example.com:3001/ws');
   assert.equal(defaultWsUrl(page('?server=bogus')), 'wss://game.example.com/ws', 'invalid param → page origin');
+  assert.equal(defaultWsUrl(page('?server=javascript:alert(1)')), 'wss://game.example.com/ws', 'script scheme → page origin, never in the socket URL');
   assert.equal(defaultWsUrl(page('')), 'wss://game.example.com/ws', 'no param → page origin (default)');
   assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }), 'ws://g.com/ws');
+});
+
+// ---- reconnect-token safety: hello must not leak the stored token to a foreign backend ----
+
+test('onDefaultBackend: true only when the connection targets the default backend', () => {
+  const g = { origin: 'https://game.example.com', search: '' };
+  assert.equal(onDefaultBackend('', g), true, 'single-origin, no override → default');
+  assert.equal(onDefaultBackend('?server=https://game.example.com', g), true, 'override equal to the default → default');
+  assert.equal(onDefaultBackend('?server=', g), true, 'empty override → default');
+  assert.equal(onDefaultBackend('?server=bogus', g), true, 'invalid override falls back to the default');
+  assert.equal(onDefaultBackend('?server=https://api.other.com', g), false, 'foreign override → not the default');
+  assert.equal(onDefaultBackend(undefined, undefined), true, 'no live location (Node) → default');
+});
+
+test('net: hello carries the reconnect token only on the default backend', () => {
+  const timers = {
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+  };
+  /** Connect with a fake page location; return the hello the socket sent. */
+  const drive = (search) => {
+    const sockets = [];
+    const FakeWS = class {
+      constructor(url) { this.url = url; this.readyState = 1; this.sent = []; sockets.push(this); }
+      send(data) { this.sent.push(JSON.parse(data)); }
+      close() { this.readyState = 3; }
+    };
+    const saved = globalThis.location;
+    globalThis.location = { origin: 'https://game.example.com', protocol: 'https:', host: 'game.example.com', search };
+    try {
+      const net = new Net({ WebSocket: FakeWS, timers, now: () => 0, random: () => 0.5, getToken: () => 'tok-1' });
+      net.setName('凯尔希');
+      const sock = sockets.at(-1);
+      sock.onopen?.();
+      return sock.sent.find((m) => m.t === 'hello');
+    } finally {
+      if (saved === undefined) delete globalThis.location;
+      else globalThis.location = saved;
+    }
+  };
+  assert.equal(drive('').token, 'tok-1', 'default backend (page origin) → token sent');
+  assert.equal(drive('?server=https://game.example.com').token, 'tok-1', 'override equal to the default → token sent');
+  assert.equal(drive('?server=bogus').token, 'tok-1', 'invalid override falls back to the default → token sent');
+  assert.equal(
+    drive('?server=https://api.other.com').token, undefined,
+    'foreign ?server= backend → NO token: a fresh session instead of leaking the stored one');
+  assert.equal(drive('?server=https://api.other.com').name, '凯尔希', 'hello itself is still sent (name only)');
 });
