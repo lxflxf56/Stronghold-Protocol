@@ -24,6 +24,21 @@ export const BACKEND_ORIGIN = '';
 /** Query-string parameter that overrides BACKEND_ORIGIN at runtime. */
 export const SERVER_PARAM = 'server';
 
+// ---- separation gate --------------------------------------------------------------------------
+// Front/back-end separation is opt-in by the SERVER (env ALLOW_SEPARATE_FRONTEND): /healthz
+// reports it as `separation`, and main.js passes the answer here at boot. Until that answer
+// arrives — and whenever it is no — this page behaves as a single-origin client: a `?server=`
+// override is ignored and every URL stays on the default backend. The build itself stays
+// separation-capable by default (a build with BACKEND_ORIGIN set talks to that backend, and
+// the runtime switcher activates as soon as the server opts in).
+let SEPARATION_ENABLED = false;
+
+/** Record the server's answer (main.js boot, from /healthz `separation`). @param {boolean} on */
+export function setSeparationEnabled(on) { SEPARATION_ENABLED = on === true; }
+
+/** Whether the server allows a separated front end (a `?server=` override may take effect). @returns {boolean} */
+export function separationEnabled() { return SEPARATION_ENABLED; }
+
 /**
  * Normalise a backend origin typed/pasted by a user (or read from the URL): a full http(s) origin,
  * or '' when the input is not an absolute http(s) URL.
@@ -67,7 +82,9 @@ export function parseServerParam(search) {
 export function effectiveBackendOrigin(search, loc = globalThis.location) {
   let s = search;
   if (s === undefined || s === null) s = loc?.search ?? '';
-  const override = parseServerParam(s);
+  // The override only takes effect when the server allows separation — otherwise the page
+  // stays on the default backend no matter what the URL says.
+  const override = separationEnabled() ? parseServerParam(s) : '';
   if (override) return override;
   if (BACKEND_ORIGIN) return BACKEND_ORIGIN;
   return loc?.origin || '';

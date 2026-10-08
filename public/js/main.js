@@ -51,7 +51,7 @@ import { installDeviceSupport } from './ui/device.js';
 import { LoadoutHost } from './screens/loadout.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
-import { effectiveBackendOrigin, parseServerParam } from './config.js';
+import { backendUrl, effectiveBackendOrigin, parseServerParam, setSeparationEnabled } from './config.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 
@@ -357,7 +357,22 @@ async function boot() {
   // Optional local-client art manifest (emotes, tutorial pages, official UI sprites; DESIGN §13).
   data.load('local').catch(() => {});
 
-  const connectWhenReady = identityReady.then(() => {
+  // Front/back-end separation is opt-in by the server (env ALLOW_SEPARATE_FRONTEND): /healthz
+  // reports it as `separation`. Read it BEFORE connecting: until the answer arrives (or it says
+  // no) this page is a single-origin client — a `?server=` override is ignored and the runtime
+  // server switcher stays hidden. The fetch targets the default backend (the gate is still off,
+  // so effectiveBackendOrigin() resolves to BACKEND_ORIGIN / the page origin), which is also the
+  // only origin that can answer cross-origin when separation is off (no CORS headers).
+  const separationReady = fetch(backendUrl('/healthz', effectiveBackendOrigin()), { cache: 'no-store' })
+    .then((res) => res.json())
+    .then((body) => {
+      const on = body?.separation === true;
+      setSeparationEnabled(on);
+      store.patch('ui', { separation: on });
+    })
+    .catch(() => { /* no readable /healthz: separation stays off */ });
+
+  const connectWhenReady = Promise.all([identityReady, separationReady]).then(() => {
     if (entered) net.setName(savedName);
     else net.connect();
   });

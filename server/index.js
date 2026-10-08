@@ -2,8 +2,8 @@
 // wires the modules under server/http/, in this order —
 //
 //   http/config.js     ROOT, the served directories, the environment (PORT 3000, HOST 0.0.0.0, TRUST_PROXY auto,
-//                      DEBUG, FRONTEND_ORIGIN for cross-origin /healthz; which startServer() options go to net.js /
-//                      lobby.js, the console logger)
+//                      DEBUG, FRONTEND_ORIGIN + ALLOW_SEPARATE_FRONTEND for cross-origin /healthz; which
+//                      startServer() options go to net.js / lobby.js, the console logger)
 //   http/websocket.js  session wiring (SessionRegistry → Lobby → Network) and the WebSocket at /ws (maxPayload 64 KB;
 //                      refused at upgrade with 404 / 429 per network / 503)
 //   http/static.js     the static mounts (/ → public/, /data/, /shared/, /sim/ `.js` only), the /data.js browser stand-in,
@@ -26,7 +26,7 @@
 
 import http from 'node:http';
 import { getData, loadData } from './data.js';
-import { ROOT, listenAddress, serveDirs, makeLogger, parseTrustProxy, parseFrontendOrigin } from './http/config.js';
+import { ROOT, listenAddress, serveDirs, makeLogger, parseTrustProxy, parseFrontendOrigin, parseSeparationEnabled } from './http/config.js';
 import { WS_MAX_PAYLOAD, createSessionStack, attachWebSocket } from './http/websocket.js';
 import { DATA_SHIM_JS, createStaticHandler } from './http/static.js';
 import { createPackRegistry } from './packs.js';
@@ -39,7 +39,7 @@ import { lanUrls, isProcessEntry, runMain } from './http/boot.js';
 // The public API of this module (tests and tools import it from here); the code lives in ./http/.
 export {
   ROOT, WS_MAX_PAYLOAD, DATA_SHIM_JS, MIME, COMPRESSIBLE, BUILD_INPUTS, computeBuildTag, buildTag, resetBuildTag,
-  acceptsGzip, parseRange, createStaticHandler, lanUrls, parseTrustProxy, parseFrontendOrigin,
+  acceptsGzip, parseRange, createStaticHandler, lanUrls, parseTrustProxy, parseFrontendOrigin, parseSeparationEnabled,
 };
 
 /**
@@ -52,7 +52,7 @@ export {
  *   ratePerSec?: number, rateBurst?: number, maxConnections?: number, maxRooms?: number,
  *   maxConnectionsPerAddr?: number, maxRoomsPerAddr?: number, maxMatchesPerAddr?: number, resyncMinGapMs?: number,
  *   heavyPerSec?: number, heavyBurst?: number, trustProxy?: 'auto' | boolean, soloReconnectWindowMs?: number,
- *   frontendOrigin?: string,
+ *   frontendOrigin?: string, separation?: boolean,
  * }} [opts]
  * @returns {Promise<{ port: number, host: string, url: string, server: http.Server, wss: import('ws').WebSocketServer,
  *                     lobby: import('./lobby.js').Lobby, network: import('./net.js').Network,
@@ -66,7 +66,11 @@ export async function startServer(opts = {}) {
 
   // The process-wide singleton serves the default data dir; a custom dir (tests) gets its own copy.
   const data = opts.dataDir ? loadData(dataDir, { log }) : getData({ dir: dataDir, log });
-  const frontendOrigin = parseFrontendOrigin(opts.frontendOrigin ?? process.env.FRONTEND_ORIGIN);
+  // Front/back-end separation is opt-in (ALLOW_SEPARATE_FRONTEND, default off). Off: /healthz carries
+  // no CORS headers and reports separation:false — a separated front end gets no build tag and the
+  // runtime server switcher stays hidden. On: FRONTEND_ORIGIN decides the CORS origin ('*' default).
+  const separation = parseSeparationEnabled(opts.separation);
+  const frontendOrigin = separation ? parseFrontendOrigin(opts.frontendOrigin ?? process.env.FRONTEND_ORIGIN) : '';
   const { registry, lobby, network } = createSessionStack(opts, { data, log });
   // content packs (docs/PACKS.md): scanned now — the start log names them — and again whenever their folders change
   const packs = createPackRegistry({ publicDir, dataDir, packsDir }, { log });
@@ -77,7 +81,7 @@ export async function startServer(opts = {}) {
   resetBuildTag();
   buildTag();
 
-  const server = http.createServer(createRequestHandler({ serveStatic, health: { startedAt, network, registry, lobby }, log, frontendOrigin }));
+  const server = http.createServer(createRequestHandler({ serveStatic, health: { startedAt, network, registry, lobby, separation }, log, frontendOrigin }));
   server.on('clientError', answerClientError);
   const wss = attachWebSocket(server, { network, log });
 

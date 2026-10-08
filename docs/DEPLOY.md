@@ -223,20 +223,23 @@ server {
 
 https / wss 说明：页面通过 https 打开时客户端自动连接 `wss://同一域名/ws`；http 时用 `ws://`。服务器本身只提供 http，证书由代理 / 隧道负责。代理与服务器在同一台机器或内网时，`TRUST_PROXY=auto` 会信任它的 `X-Forwarded-For` / `X-Real-IP`；代理在公网另一台机器上时设 `TRUST_PROXY=1`（同时确保游戏端口只对代理开放）。
 
-### 2.5 前后端分离（前端纯静态，后端本地 + 隧道）
+### 2.5 前后端分离（前端纯静态，后端服务器）
 
-最小改动方案：前端域名只托管浏览器静态文件，后端域名只运行游戏服务器（`/ws` 与 `/healthz`）。本仓库不包含任何静态托管平台或隧道的配置文件；构建命令、输出目录、自定义域名和隧道都在平台控制台 / 隧道环境中配置。
+前端域名只托管浏览器静态文件，后端域名运行游戏服务器（`/ws` 与 `/healthz`）。
 
-1. **前端配置**：构建前编辑 `public/js/config.js`，把 `BACKEND_ORIGIN` 设为后端域名（含协议，如 `https://api.example.com`）。留空时保持现有单域名行为。
-2. **生成前端静态输出**：运行 `node tools/build-frontend.mjs`（默认输出 `dist/`）。输出映射为 `/` → `public/`、`/data/` → `data/`、`/shared/` → `shared/`、`/sim/` → `server/sim/` 的浏览器安全 `.js` 文件；`server/sim/nodeData.js` 被排除，点文件和编辑器备份也会被跳过。构建前先完成 `npm ci`（postinstall 会生成 `public/vendor/`）；若需要官方美术 / 音频，先运行 `node tools/setup.mjs` 再构建。
-3. **部署前端**：把 `dist/` 作为静态站点的输出目录部署到前端域名。静态主机必须能按扩展名提供 MIME 类型，尤其是 `.skel` 为 `application/octet-stream`、`.atlas` 为 `text/plain; charset=utf-8`。`/media/` 不需要映射：`public/js/audio.js` 遇到 404 或非音频响应会回退到 `/assets/audio/…`。
-4. **后端域名**：本地运行 `npm start`，并用隧道（如 `cloudflared tunnel --url http://localhost:3000`）暴露为后端域名。服务器必须位于域名根路径；`/ws` 与 `/healthz` 之外不需要暴露其他路径。隧道与 HTTPS/WSS 由隧道环境负责，代理信任规则见 2.4。
-5. **后端配置**：设置 `FRONTEND_ORIGIN=https://game.example.com`（可选；默认 `*`，因为 `/healthz` 是公开且无凭据的端点）。它只给 `/healthz` 加 CORS，让前端域名读取构建版本号；WebSocket 跨域由浏览器直接支持，不需要 CORS。
-6. 前端是 `https` 时，后端域名也必须是 `https`（浏览器会把 `ws://` 当混合内容拦截；客户端会自动用 `wss://`）。
+**前端（构建并部署静态站点）：**
 
-**运行时切换后端**：访客可以不用重新构建，直接在标题屏幕的设置中点击「更换服务器」，输入另一个后端域名（`https://…`），客户端把它写进 `?server=<origin>`，并重新连接到该后端；留空则恢复 `BACKEND_ORIGIN`（删除该参数）。该参数是页面与后端连接的唯一来源：WebSocket（`/ws`）和构建检查（`/healthz`）都会跟随它，所以切换后端不会让其中一端留连旧服务器。分享同盟时生成的邀请链接，只有在所选后端与默认不同时才带上 `?server=`，以免让一位默认服务器的玩家被带到另一个后端。`?lang=` 与 `?room=` 等其他参数会被保留。切换后端仅在标题屏幕的设置提供（进入同盟后不显示），因为一次会话只能绑定一个后端。
+1. 编辑 `public/js/config.js`，把 `BACKEND_ORIGIN` 设为后端域名（含协议，如 `https://api.example.com`）；留空则保持单域名行为。
+2. 依次运行：`npm ci` →（需要官方美术 / 音频时）`node tools/setup.mjs` → `node tools/build-frontend.mjs`（生成静态站点，默认输出 `dist/`）。
+3. 把 `dist/` 部署到前端域名：任选静态站点托管平台，站点根目录指向 `dist/`。
 
-**后端域名**继续用 2.4 的 Caddy / Nginx 配置或直接交给隧道；直连时需要 `FRONTEND_ORIGIN`（或默认的 `*`）。
+**后端（运行前先设置环境变量）：**
+
+4. 设置 `ALLOW_SEPARATE_FRONTEND=1` 允许前后端分离（**默认关**：关时 `/healthz` 不允许跨域读取，也不提供运行时「更换服务器」）；按需设置 `FRONTEND_ORIGIN=<前端域名>`（默认 `*`，即允许任意前端域名读取 `/healthz`）。
+5. 运行 `npm start` 启动游戏服务器（如 `ALLOW_SEPARATE_FRONTEND=1 npm start`，或先 `export ALLOW_SEPARATE_FRONTEND=1` 再运行）。
+6. 用隧道或反向代理（见 2.4）把服务器暴露为后端域名：服务器必须位于域名根路径，`/ws` 与 `/healthz` 之外不需要暴露其他路径。前端是 `https` 时，后端域名也必须是 `https`（客户端会自动改用 `wss://`）。
+
+**运行时切换后端**（仅 `ALLOW_SEPARATE_FRONTEND=1` 时可用）：访客在标题屏幕的设置中点「更换服务器」，输入后端域名（写入 `?server=<origin>`，留空恢复默认后端）；未开启时 `?server=` 被忽略，页面始终连接默认后端。
 
 ## 3. Docker
 
