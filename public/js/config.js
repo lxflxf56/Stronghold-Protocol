@@ -19,21 +19,23 @@
 // recipients onto a different backend (docs/I18N.md-style note: see DESIGN §2 / §8).
 
 /** Configured game-server origin; empty means the front-end and back-end share one origin. */
-export const BACKEND_ORIGIN = '';
+export const BACKEND_ORIGIN = 'https://stronghold-protocol.751396.xyz';
 
 /** Query-string parameter that overrides BACKEND_ORIGIN at runtime. */
 export const SERVER_PARAM = 'server';
 
 // ---- separation gate --------------------------------------------------------------------------
-// Front/back-end separation is opt-in by the SERVER (env ALLOW_SEPARATE_FRONTEND): /healthz
-// reports it as `separation`, and main.js passes the answer here at boot. Until that answer
-// arrives — and whenever it is no — this page behaves as a single-origin client: a `?server=`
-// override is ignored and every URL stays on the default backend. The build itself stays
-// separation-capable by default (a build with BACKEND_ORIGIN set talks to that backend, and
-// the runtime switcher activates as soon as the server opts in).
+// Front/back-end separation support is a BUILD-TIME setting: tools/build-frontend.mjs
+// rewrites the initial value below to the build's ALLOW_SEPARATE_FRONTEND ('1' by
+// default for builds), so the static site ships with the runtime server switcher and
+// honours a `?server=` override. A build with ALLOW_SEPARATE_FRONTEND=0 ships without
+// separation: the override is ignored and every URL stays on the default backend.
+// The SERVER's own ALLOW_SEPARATE_FRONTEND (default off) is a separate runtime
+// switch — it decides whether /healthz carries CORS headers (server/http/config.js),
+// not this client-side setting.
 let SEPARATION_ENABLED = false;
 
-/** Record the server's answer (main.js boot, from /healthz `separation`). @param {boolean} on */
+/** Set the gate at runtime (tests; app code reads the build-baked value). @param {boolean} on */
 export function setSeparationEnabled(on) { SEPARATION_ENABLED = on === true; }
 
 /** Whether the server allows a separated front end (a `?server=` override may take effect). @returns {boolean} */

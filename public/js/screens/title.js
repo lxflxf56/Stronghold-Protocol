@@ -17,6 +17,7 @@ import { GuideButton } from '../ui/guide.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
 import { store, useStore, shallowEqual } from '../store.js';
+import { separationEnabled } from '../config.js';
 import { data, useData } from '../data.js';
 import { FullscreenButton, detectFeatures } from '../ui/device.js';
 import { LangToggle, useLang } from '../ui/lang.js';
@@ -189,9 +190,6 @@ const STATUS_TEXT = {
 export function TitleScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
   const pendingJoin = useStore((s) => s.ui.pendingJoin);
-  // The runtime server switcher exists only when the backend allows front/back-end
-  // separation (/healthz `separation`, read at boot — see main.js and config.js).
-  const separation = useStore((s) => s.ui.separation);
   useLang(); // re-render on a language switch
   const [name, setName] = useState(() => store.get().me.name || identity.loadName() || '');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -283,7 +281,7 @@ export function TitleScreen() {
       </div>
     </main>
 
-    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} allowServerSwitch=${separation} />
+    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} allowServerSwitch=${separationEnabled()} />
 
     <footer class="title-foot">
       <span>${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>

@@ -27,8 +27,9 @@ export function healthReport({ startedAt, network, registry, lobby, separation =
     // the runtime the server is serving right now (public/js/ui/buildGuard.js): a page whose own build is
     // older than this reloads itself, so a deploy reaches clients that never reload
     build: buildTag(),
-    // whether the server allows a separated front end (ALLOW_SEPARATE_FRONTEND): the client reads
-    // this to offer the runtime server switcher and to honour a `?server=` override (config.js)
+    // whether the server allows cross-origin /healthz reads (ALLOW_SEPARATE_FRONTEND);
+    // informational for operators — the client's switcher is a build-time setting
+    // (tools/build-frontend.mjs), not this field
     separation,
     sockets: network.connectionCount, sessions: registry.size, ...lobby.stats(),
   };

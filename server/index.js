@@ -66,9 +66,11 @@ export async function startServer(opts = {}) {
 
   // The process-wide singleton serves the default data dir; a custom dir (tests) gets its own copy.
   const data = opts.dataDir ? loadData(dataDir, { log }) : getData({ dir: dataDir, log });
-  // Front/back-end separation is opt-in (ALLOW_SEPARATE_FRONTEND, default off). Off: /healthz carries
-  // no CORS headers and reports separation:false — a separated front end gets no build tag and the
-  // runtime server switcher stays hidden. On: FRONTEND_ORIGIN decides the CORS origin ('*' default).
+  // Front/back-end separation is opt-in on the server (ALLOW_SEPARATE_FRONTEND,
+  // default off). Off: /healthz carries no CORS headers and reports
+  // separation:false — no cross-origin reads. On: FRONTEND_ORIGIN decides the
+  // CORS origin ('*' default). The client's separation support is a separate
+  // build-time setting (tools/build-frontend.mjs, on by default for builds).
   const separation = parseSeparationEnabled(opts.separation);
   const frontendOrigin = separation ? parseFrontendOrigin(opts.frontendOrigin ?? process.env.FRONTEND_ORIGIN) : '';
   const { registry, lobby, network } = createSessionStack(opts, { data, log });

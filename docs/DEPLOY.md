@@ -230,16 +230,16 @@ https / wss 说明：页面通过 https 打开时客户端自动连接 `wss://�
 **前端（构建并部署静态站点）：**
 
 1. 编辑 `public/js/config.js`，把 `BACKEND_ORIGIN` 设为后端域名（含协议，如 `https://api.example.com`）；留空则保持单域名行为。
-2. 依次运行：`npm ci` →（需要官方美术 / 音频时）`node tools/setup.mjs` → `node tools/build-frontend.mjs`（生成静态站点，默认输出 `dist/`）。
+2. 依次运行：`npm ci` →（需要官方美术 / 音频时）`node tools/setup.mjs` → `node tools/build-frontend.mjs`（生成静态站点，默认输出 `dist/`）。仅前端构建默认烘入前后端分离支持（构建时环境变量 `ALLOW_SEPARATE_FRONTEND`，默认 `1`；设 `0` 可构建不含分离支持的站点）。
 3. 把 `dist/` 部署到前端域名：任选静态站点托管平台，站点根目录指向 `dist/`。
 
 **后端（运行前先设置环境变量）：**
 
-4. 设置 `ALLOW_SEPARATE_FRONTEND=1` 允许前后端分离（**默认关**：关时 `/healthz` 不允许跨域读取，也不提供运行时「更换服务器」）；按需设置 `FRONTEND_ORIGIN=<前端域名>`（默认 `*`，即允许任意前端域名读取 `/healthz`）。
+4. 设置 `ALLOW_SEPARATE_FRONTEND=1` 允许 `/healthz` 跨域读取（**默认关**：关时 `/healthz` 只允许同源读取）；按需设置 `FRONTEND_ORIGIN=<前端域名>`（默认 `*`，即允许任意前端域名读取 `/healthz`）。
 5. 运行 `npm start` 启动游戏服务器（如 `ALLOW_SEPARATE_FRONTEND=1 npm start`，或先 `export ALLOW_SEPARATE_FRONTEND=1` 再运行）。
 6. 用隧道或反向代理（见 2.4）把服务器暴露为后端域名：服务器必须位于域名根路径，`/ws` 与 `/healthz` 之外不需要暴露其他路径。前端是 `https` 时，后端域名也必须是 `https`（客户端会自动改用 `wss://`）。
 
-**运行时切换后端**（仅 `ALLOW_SEPARATE_FRONTEND=1` 时可用）：访客在标题屏幕的设置中点「更换服务器」，输入后端域名（写入 `?server=<origin>`，留空恢复默认后端）；未开启时 `?server=` 被忽略，页面始终连接默认后端。
+**运行时切换后端**：标题屏幕的设置中点「更换服务器」，输入后端域名（写入 `?server=<origin>`，留空恢复默认后端）。是否提供该按钮由**构建时**环境变量 `ALLOW_SEPARATE_FRONTEND` 决定（默认 `1` 提供；构建时设 `0` 则不含该按钮，且 `?server=` 一律被忽略，页面始终连接默认后端）。
 
 ## 3. Docker
 

@@ -3,7 +3,7 @@
 // URL, the server's /healthz CORS header, and the browser-only static build output.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, rm, stat } from 'node:fs/promises';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -18,11 +18,15 @@ import { buildFrontend, isBrowserSimFile } from '../tools/build-frontend.mjs';
 
 const TEST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Run a test body with the server-advertised separation enabled (the client default is off). */
+/** Run a test body with the build-time separation gate enabled (the un-baked source default is off). */
 const withSeparation = (fn) => {
   setSeparationEnabled(true);
   try { return fn(); } finally { setSeparationEnabled(false); };
 };
+
+/** The default backend for the test page: the configured BACKEND_ORIGIN (a
+ * deployment bakes one in — docs/DEPLOY.md §2.5), else the page origin. */
+const DEF = BACKEND_ORIGIN || 'https://game.example.com';
 
 /** Every regular file under `dir`, as file names (the sim tree has no non-JS files). */
 async function listFiles(dir) {
@@ -36,9 +40,8 @@ async function listFiles(dir) {
 }
 
 test('config: an empty BACKEND_ORIGIN keeps every URL on the front-end origin', () => {
-  assert.equal(BACKEND_ORIGIN, '');
-  assert.equal(backendUrl('/healthz'), '/healthz');
-  assert.equal(backendWsUrl('/ws'), '');
+  assert.equal(backendUrl('/healthz', ''), '/healthz');
+  assert.equal(backendWsUrl('/ws', ''), '');
 });
 
 test('config: a configured backend domain produces absolute http(s) / ws(s) URLs', () => {
@@ -50,7 +53,7 @@ test('config: a configured backend domain produces absolute http(s) / ws(s) URLs
 
 test('net: defaultWsUrl uses the configured backend domain, not the page domain', () => {
   const page = { protocol: 'https:', host: 'game.example.com' };
-  assert.equal(defaultWsUrl(page), 'wss://game.example.com/ws');
+  assert.equal(defaultWsUrl(page), backendWsUrl('/ws', DEF));
   assert.equal(defaultWsUrl(page, 'https://api.example.com'), 'wss://api.example.com/ws');
   assert.equal(defaultWsUrl(page, 'http://api.example.com:3001'), 'ws://api.example.com:3001/ws');
 });
@@ -59,9 +62,9 @@ test('buildGuard: /healthz moves to the configured backend domain', async () => 
   const urls = [];
   const fetchFn = async (url) => { urls.push(url); return { ok: true, json: async () => ({ build: 'abc' }) }; };
   assert.equal(await fetchBuild(fetchFn), 'abc');
-  assert.deepEqual(urls, ['/healthz']);
+  assert.deepEqual(urls, [backendUrl('/healthz')]);
   assert.equal(await fetchBuild(fetchFn, { backendOrigin: 'https://api.example.com' }), 'abc');
-  assert.deepEqual(urls, ['/healthz', 'https://api.example.com/healthz']);
+  assert.deepEqual(urls, [backendUrl('/healthz'), 'https://api.example.com/healthz']);
 });
 
 test('server: parseFrontendOrigin defaults to * and keeps a configured origin', () => {
@@ -167,6 +170,27 @@ test('static build: refuses to write a source directory', async () => {
   await assert.rejects(buildFrontend({ out: join(TEST_ROOT, 'test', 'not-output'), quiet: true }), /test sources/);
 });
 
+test('static build: bakes the separation default into js/config.js (on by default for builds)', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-sep');
+  const saved = process.env.ALLOW_SEPARATE_FRONTEND;
+  try {
+    delete process.env.ALLOW_SEPARATE_FRONTEND; // build default: '1' → separation baked in
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /let SEPARATION_ENABLED = true;/, 'a default build ships with separation support');
+    process.env.ALLOW_SEPARATE_FRONTEND = '0'; // explicit off → baked as false
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /let SEPARATION_ENABLED = false;/, 'ALLOW_SEPARATE_FRONTEND=0 bakes a separation-free build');
+  } finally {
+    if (saved === undefined) delete process.env.ALLOW_SEPARATE_FRONTEND;
+    else process.env.ALLOW_SEPARATE_FRONTEND = saved;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
 // ---- ?server=<origin> runtime backend override (title-screen switcher; public/js/config.js) ----
 
 const loc = (href) => { const u = new URL(href); return { href: u.href, origin: u.origin, protocol: u.protocol, host: u.host, pathname: u.pathname, search: u.search, hash: u.hash }; };
@@ -211,17 +235,17 @@ test('effectiveBackendOrigin: override wins, invalid falls back, default is BACK
   withSeparation(() => {
     // single-origin default (BACKEND_ORIGIN === ''): the page origin IS the default backend
     const g = loc('https://game.example.com/');
-    assert.equal(effectiveBackendOrigin('', g), 'https://game.example.com');
+    assert.equal(effectiveBackendOrigin('', g), DEF);
     assert.equal(effectiveBackendOrigin('?server=https://api.other.com', g), 'https://api.other.com');
-    assert.equal(effectiveBackendOrigin('?server=bogus', g), 'https://game.example.com', 'invalid param → default');
-    assert.equal(effectiveBackendOrigin('?server=', g), 'https://game.example.com', 'empty param → default');
-    assert.equal(effectiveBackendOrigin(undefined, g), 'https://game.example.com', 'no search → default');
+    assert.equal(effectiveBackendOrigin('?server=bogus', g), DEF, 'invalid param → default');
+    assert.equal(effectiveBackendOrigin('?server=', g), DEF, 'empty param → default');
+    assert.equal(effectiveBackendOrigin(undefined, g), DEF, 'no search → default');
   });
 });
 
 test('effectiveBackendOrigin: a ?server= override is ignored until the server allows separation', () => {
   const g = loc('https://game.example.com/?server=https://api.other.com');
-  assert.equal(effectiveBackendOrigin(undefined, g), 'https://game.example.com', 'separation off (default) → override ignored, default backend');
+  assert.equal(effectiveBackendOrigin(undefined, g), DEF, 'separation off (default) → override ignored, default backend');
   withSeparation(() => assert.equal(effectiveBackendOrigin(undefined, g), 'https://api.other.com', 'separation on → override wins'));
 });
 
@@ -231,7 +255,7 @@ test('serverParamForLink: omits the param on the default backend, includes it on
     assert.equal(serverParamForLink('', g), '', 'on the default backend (page origin) → no param');
     assert.equal(serverParamForLink('?server=https://api.other.com', g), 'https://api.other.com');
     // an override that equals the default backend is still the default → no param
-    assert.equal(serverParamForLink('?server=https://game.example.com', g), '', 'override == default → no param');
+    assert.equal(serverParamForLink('?server=' + DEF, g), '', 'override == default → no param');
   });
 });
 
@@ -245,9 +269,9 @@ test('setServerInUrl: writes ?server=, preserves room/lang/hash, clears it for t
   const h2 = fakeHist();
   assert.equal(setServerInUrl('', h2, withParam), '?room=ABCD');
   assert.equal(h2.__last, '/lobby?room=ABCD');
-  // switching back to the page origin clears the param (override == default)
+  // switching back to the default backend clears the param (override == default)
   const h3 = fakeHist();
-  assert.equal(setServerInUrl('https://game.example.com', h3, withParam), '?room=ABCD');
+  assert.equal(setServerInUrl(DEF, h3, withParam), '?room=ABCD');
   assert.equal(h3.__last, '/lobby?room=ABCD');
 });
 
@@ -260,10 +284,10 @@ test('net: defaultWsUrl follows a ?server= override and falls back to the page o
     const page = (search) => ({ protocol: 'https:', host: 'game.example.com', search });
     assert.equal(defaultWsUrl(page('?server=https://api.example.com')), 'wss://api.example.com/ws');
     assert.equal(defaultWsUrl(page('?server=http://api.example.com:3001')), 'ws://api.example.com:3001/ws');
-    assert.equal(defaultWsUrl(page('?server=bogus')), 'wss://game.example.com/ws', 'invalid param → page origin');
-    assert.equal(defaultWsUrl(page('?server=javascript:alert(1)')), 'wss://game.example.com/ws', 'script scheme → page origin, never in the socket URL');
-    assert.equal(defaultWsUrl(page('')), 'wss://game.example.com/ws', 'no param → page origin (default)');
-    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }), 'ws://g.com/ws');
+    assert.equal(defaultWsUrl(page('?server=bogus')), backendWsUrl('/ws', DEF), 'invalid param → default backend');
+    assert.equal(defaultWsUrl(page('?server=javascript:alert(1)')), backendWsUrl('/ws', DEF), 'script scheme → default backend, never in the socket URL');
+    assert.equal(defaultWsUrl(page('')), backendWsUrl('/ws', DEF), 'no param → default backend');
+    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }, ''), 'ws://g.com/ws', 'no configured backend → derived from the page');
   });
 });
 
@@ -273,7 +297,7 @@ test('onDefaultBackend: true only when the connection targets the default backen
   withSeparation(() => {
     const g = { origin: 'https://game.example.com', search: '' };
     assert.equal(onDefaultBackend('', g), true, 'single-origin, no override → default');
-    assert.equal(onDefaultBackend('?server=https://game.example.com', g), true, 'override equal to the default → default');
+    assert.equal(onDefaultBackend('?server=' + DEF, g), true, 'override equal to the default → default');
     assert.equal(onDefaultBackend('?server=', g), true, 'empty override → default');
     assert.equal(onDefaultBackend('?server=bogus', g), true, 'invalid override falls back to the default');
     assert.equal(onDefaultBackend('?server=https://api.other.com', g), false, 'foreign override → not the default');
@@ -308,7 +332,7 @@ test('net: hello carries the reconnect token only on the default backend', () =>
     }
   };
   assert.equal(drive('').token, 'tok-1', 'default backend (page origin) → token sent');
-  assert.equal(drive('?server=https://game.example.com').token, 'tok-1', 'override equal to the default → token sent');
+  assert.equal(drive('?server=' + DEF).token, 'tok-1', 'override equal to the default → token sent');
   assert.equal(drive('?server=bogus').token, 'tok-1', 'invalid override falls back to the default → token sent');
   assert.equal(
     drive('?server=https://api.other.com').token, undefined,
