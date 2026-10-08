@@ -1073,7 +1073,19 @@ describe('screen helpers', () => {
     assert.equal(roomFacts(room, 'h').canStart, false, 'disconnected guest blocks start');
     assert.equal(roomFacts(room, 'g').canStart, false, 'guests cannot start');
     assert.equal(roomFacts(null, 'x').mine, null);
-    assert.match(inviteLink('ABCD'), /\?room=ABCD$/);
+    assert.match(inviteLink('ABCD'), /\?room=ABCD$/, 'no location in Node → default backend → no server param');
+  });
+
+  test('room: inviteLink carries ?server= only when the backend is not the default', async () => {
+    const { inviteLink } = await mod('screens/room.js');
+    const g = { origin: 'https://game.example.com', pathname: '/lobby', search: '' };
+    // default backend (page origin) → no server param
+    assert.match(inviteLink('ABCD', '', g), /\?room=ABCD$/);
+    // override to another backend → ?server= is appended (encoded)
+    const withServer = inviteLink('ABCD', '?server=https://api.other.com', g);
+    assert.match(withServer, /\?room=ABCD&server=https%3A%2F%2Fapi.other.com$/);
+    // an override equal to the default backend is the default → no server param
+    assert.match(inviteLink('ABCD', '?server=https://game.example.com', g), /\?room=ABCD$/);
   });
 
   test('room: spectator seats (community report #26) — isSpectating; roomFacts never counts a spectator as a player', async () => {

@@ -523,6 +523,7 @@
 .set-seg button { min-width: .8rem; height: .38rem; background: #0a0d0c; border: 0; border-right: 1px solid var(--line-2); color: var(--text-lo); font-size: .16rem; }
 .set-seg button:last-child { border-right: 0; }
 .set-seg button.is-on { background: var(--mint-500); color: var(--text-on-mint); font-weight: 700; }
+.set-server__btn { justify-self: start; } /* backend switcher row (settings.js): keep the button content-sized, not grid-stretched */
 .set-hint { margin-top: .06rem; font-size: .14rem; color: var(--text-dim); line-height: 1.8; }
 .set-hint kbd, .lvcard__key, .toolbtn kbd { font-family: var(--font-num); font-size: .11rem; border: 1px solid var(--line-2); padding: 0 .04rem; color: var(--text-lo); background: rgba(0, 0, 0, .3); }
 /* 快捷键 (ui/settings.js HotkeySection): each shortcut with its key — click the key, press the new one; two columns,

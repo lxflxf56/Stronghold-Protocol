@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { readdir, rm, stat } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BACKEND_ORIGIN, backendUrl, backendWsUrl } from '../public/js/config.js';
+import {
+  BACKEND_ORIGIN, backendUrl, backendWsUrl, SERVER_PARAM,
+  normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl,
+} from '../public/js/config.js';
 import { defaultWsUrl } from '../public/js/net.js';
 import { fetchBuild } from '../public/js/ui/buildGuard.js';
 import { parseFrontendOrigin, startServer } from '../server/index.js';
@@ -115,4 +118,82 @@ test('static build: refuses to write a source directory', async () => {
   await assert.rejects(buildFrontend({ out: join(TEST_ROOT, 'public'), quiet: true }), /source directory/);
   await assert.rejects(buildFrontend({ out: join(TEST_ROOT, 'server'), quiet: true }), /source directory/);
   await assert.rejects(buildFrontend({ out: join(TEST_ROOT, 'test', 'not-output'), quiet: true }), /test sources/);
+});
+
+// ---- ?server=<origin> runtime backend override (title-screen switcher; public/js/config.js) ----
+
+const loc = (href) => { const u = new URL(href); return { href: u.href, origin: u.origin, protocol: u.protocol, host: u.host, pathname: u.pathname, search: u.search, hash: u.hash }; };
+/** A fake history that records the replaceState argument. */
+const fakeHist = () => ({ state: null, __last: null, replaceState(st, _t, url) { this.__last = url; } });
+
+test('normalizeOrigin: http(s) origins only, strips path/auth; empty otherwise', () => {
+  assert.equal(normalizeOrigin('https://api.example.com'), 'https://api.example.com');
+  assert.equal(normalizeOrigin('http://api.example.com:3001'), 'http://api.example.com:3001');
+  assert.equal(normalizeOrigin('https://user:pass@api.example.com'), 'https://api.example.com');
+  assert.equal(normalizeOrigin('https://api.example.com/path'), 'https://api.example.com');
+  assert.equal(normalizeOrigin('ftp://x.com'), '', 'non-http(s) scheme → default');
+  assert.equal(normalizeOrigin('not-a-url'), '', 'relative / garbage → default');
+  assert.equal(normalizeOrigin(''), '', 'empty → default');
+  assert.equal(normalizeOrigin('  https://api.example.com  '), 'https://api.example.com', 'trimmed first');
+});
+
+test('parseServerParam: reads `?server=` only; valid http(s) origin or empty', () => {
+  assert.equal(SERVER_PARAM, 'server');
+  assert.equal(parseServerParam(''), '');
+  assert.equal(parseServerParam('?room=ABCD'), '');
+  assert.equal(parseServerParam('?server='), '');
+  assert.equal(parseServerParam('?server=not-a-url'), '');
+  assert.equal(parseServerParam('?server=ftp://x.com'), '');
+  assert.equal(parseServerParam('?server=https://api.example.com'), 'https://api.example.com');
+  assert.equal(parseServerParam('?server=http://api.example.com:3001'), 'http://api.example.com:3001');
+  assert.equal(parseServerParam('?server=https://api.example.com/path'), 'https://api.example.com');
+  // ignores unrelated params and other query keys
+  assert.equal(parseServerParam('?room=ABCD&server=https://api.example.com&lang=en'), 'https://api.example.com');
+});
+
+test('effectiveBackendOrigin: override wins, invalid falls back, default is BACKEND_ORIGIN then page origin', () => {
+  // single-origin default (BACKEND_ORIGIN === ''): the page origin IS the default backend
+  const g = loc('https://game.example.com/');
+  assert.equal(effectiveBackendOrigin('', g), 'https://game.example.com');
+  assert.equal(effectiveBackendOrigin('?server=https://api.other.com', g), 'https://api.other.com');
+  assert.equal(effectiveBackendOrigin('?server=bogus', g), 'https://game.example.com', 'invalid param → default');
+  assert.equal(effectiveBackendOrigin('?server=', g), 'https://game.example.com', 'empty param → default');
+  assert.equal(effectiveBackendOrigin(undefined, g), 'https://game.example.com', 'no search → default');
+});
+
+test('serverParamForLink: omits the param on the default backend, includes it only for a real override', () => {
+  const g = loc('https://game.example.com/');
+  assert.equal(serverParamForLink('', g), '', 'on the default backend (page origin) → no param');
+  assert.equal(serverParamForLink('?server=https://api.other.com', g), 'https://api.other.com');
+  // an override that equals the default backend is still the default → no param
+  assert.equal(serverParamForLink('?server=https://game.example.com', g), '', 'override == default → no param');
+});
+
+test('setServerInUrl: writes ?server=, preserves room/lang/hash, clears it for the default', () => {
+  const g = loc('https://game.example.com/lobby?room=ABCD&lang=en#top');
+  const h1 = fakeHist();
+  assert.equal(setServerInUrl('https://api.other.com', h1, g), '?room=ABCD&lang=en&server=https%3A%2F%2Fapi.other.com');
+  assert.equal(h1.__last, '/lobby?room=ABCD&lang=en&server=https%3A%2F%2Fapi.other.com#top');
+  // clearing: empty origin (default) drops the param, keeps room
+  const withParam = loc('https://game.example.com/lobby?room=ABCD&server=https://api.other.com');
+  const h2 = fakeHist();
+  assert.equal(setServerInUrl('', h2, withParam), '?room=ABCD');
+  assert.equal(h2.__last, '/lobby?room=ABCD');
+  // switching back to the page origin clears the param (override == default)
+  const h3 = fakeHist();
+  assert.equal(setServerInUrl('https://game.example.com', h3, withParam), '?room=ABCD');
+  assert.equal(h3.__last, '/lobby?room=ABCD');
+});
+
+test('setServerInUrl: returns null without a live location', () => {
+  assert.equal(setServerInUrl('https://api.example.com'), null);
+});
+
+test('net: defaultWsUrl follows a ?server= override and falls back to the page origin on an invalid one', () => {
+  const page = (search) => ({ protocol: 'https:', host: 'game.example.com', search });
+  assert.equal(defaultWsUrl(page('?server=https://api.example.com')), 'wss://api.example.com/ws');
+  assert.equal(defaultWsUrl(page('?server=http://api.example.com:3001')), 'ws://api.example.com:3001/ws');
+  assert.equal(defaultWsUrl(page('?server=bogus')), 'wss://game.example.com/ws', 'invalid param → page origin');
+  assert.equal(defaultWsUrl(page('')), 'wss://game.example.com/ws', 'no param → page origin (default)');
+  assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }), 'ws://g.com/ws');
 });

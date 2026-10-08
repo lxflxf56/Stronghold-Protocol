@@ -136,3 +136,29 @@ test('startBuildGuard: stop() ends the watch', async () => {
   assert.equal(m.guard.stale(), false);
   assert.equal(BUILD_CHECK_MS, 60_000);
 });
+
+test('fetchBuild / startBuildGuard: a function backendOrigin is resolved per call (follows a runtime backend switch)', async () => {
+  const seen = [];
+  let origin = 'https://api.a.com';
+  const fetchFn = async (url) => { seen.push(url); return { ok: true, status: 200, json: async () => ({ build: 'same' }) }; };
+  assert.equal(await fetchBuild(fetchFn, { backendOrigin: () => origin }), 'same');
+  assert.equal(seen[0], 'https://api.a.com/healthz', 'a function origin points /healthz at the chosen backend');
+  origin = 'https://api.b.com';
+  assert.equal(await fetchBuild(fetchFn, { backendOrigin: () => origin }), 'same');
+  assert.equal(seen[1], 'https://api.b.com/healthz', 're-resolved on each call, so a live ?server= switch is followed');
+  // startBuildGuard forwards the same option and resolves it per check
+  const seen2 = [];
+  let origin2 = 'https://api.c.com';
+  const guard = startBuildGuard({
+    fetchFn: async (url) => { seen2.push(url); return { ok: true, status: 200, json: async () => ({ build: 'same' }) }; },
+    reload: () => {}, backendOrigin: () => origin2,
+    setInterval: () => 0, clearInterval: () => {},
+  });
+  await new Promise((r) => setTimeout(r, 0));      // drain the floating first check kicked off by startBuildGuard
+  await guard.check();
+  assert.equal(seen2[seen2.length - 1], 'https://api.c.com/healthz', 'current value honored on a check');
+  origin2 = 'https://api.d.com';
+  await guard.check();
+  assert.equal(seen2[seen2.length - 1], 'https://api.d.com/healthz', 'the guard re-resolves a function origin per check');
+  guard.stop();
+});

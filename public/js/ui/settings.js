@@ -6,8 +6,11 @@
 // 「快捷键可不可以自己设置」, the owner's decision of 2026-10-07).
 
 import { useLayoutEffect, useState } from '../../vendor/hooks.module.js';
-import { html, Modal, Button, Icon, MicroLabel } from './components.js';
-import { createStore, useStore, loadPref, savePref } from '../store.js';
+import { html, Modal, Button, Icon, MicroLabel, TextField } from './components.js';
+import { store, createStore, useStore, loadPref, savePref } from '../store.js';
+import { normalizeOrigin, setServerInUrl } from '../config.js';
+import { net, identity } from '../net.js';
+import { toast } from './toasts.js';
 import { sanitizeSettings, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, hotkeyLabel, rebindHotkey, isDefaultHotkeys, captureHotkey } from './gameLogic.js';
 import { audio } from '../audio.js';
 import { openGuide } from './guide.js';
@@ -145,14 +148,55 @@ function HotkeySection({ keys, touchUi }) {
 }
 
 /**
- * Settings modal.
- * @param {{ open: boolean, onClose: Function }} props
+ * Backend switcher modal: overrides the build-time BACKEND_ORIGIN (public/js/config.js) with a
+ * `?server=<origin>` URL parameter. Lives in the Settings modal on the title screen only
+ * (`allowServerSwitch` on SettingsModal) — switching the backend mid-session would desync an
+ * in-progress room/match (the server, the session token and every in-flight request bind to one origin).
  */
-export function SettingsModal({ open, onClose }) {
+function ServerPicker({ open, current, onPick, onClose }) {
+  const [val, setVal] = useState(current || '');
+  const apply = () => {
+    const origin = normalizeOrigin(val.trim());
+    if (val.trim() && !origin) {
+      toast(t('服务器地址无效，请输入以 http(s):// 开头的完整地址'), 'warn');
+      return;
+    }
+    onPick(origin);
+    onClose();
+  };
+  return html`<${Modal} open=${open} onClose=${onClose} title=${t('更换后端服务器')} micro="SERVER"
+    actions=${html`<${Button} variant="secondary" icon="close" onClick=${onClose}>${t('取消')}<//>
+      <${Button} variant="primary" icon="check" onClick=${apply}>${t('确认')}<//>`}>
+    <${TextField} label=${t('服务器地址')} micro="http(s)://host" value=${val} maxLength=${120}
+      placeholder=${t('留空使用默认服务器')} autoFocus=${true} onInput=${setVal} onEnter=${apply} />
+    <p class="set-hint">${t('更换服务器将断开当前连接并重连')}</p>
+  </${Modal}>`;
+}
+
+/** Apply a backend switch from the Settings picker: write `?server=` (or drop it for the default),
+ * update ui.server, drop the now-stale per-backend token and reconnect the socket. */
+function pickServer(origin) {
+  const prev = store.get().ui.server;
+  setServerInUrl(origin);
+  store.patch('ui', { server: origin });
+  if (prev !== origin) identity.clearToken();
+  net.reconnectNow();
+  if (origin) toast(t('服务器已更换'), 'success');
+}
+
+/**
+ * Settings modal. `allowServerSwitch` (set on the title screen only; false by default so the in-game
+ * Settings from game.js never lets a player desync a live room/match) exposes the backend switcher row.
+ * @param {{ open: boolean, onClose: Function, allowServerSwitch?: boolean }} props
+ */
+export function SettingsModal({ open, onClose, allowServerSwitch = false }) {
   const s = useSettings();
   const [tested, setTested] = useState(false);
   const [touchUi] = useState(() => detectFeatures().coarse && !detectFeatures().fine);
   const mtNote = machineTranslationNote(); // a pack marked as machine translation says so under the switch
+  // backend switcher state (rendered only when allowServerSwitch is set, i.e. on the title screen).
+  const [spOpen, setSpOpen] = useState(false);
+  const server = useStore((s2) => s2.ui.server);
   return html`<${Modal} open=${open} onClose=${onClose} title=${t('设置')} micro="SETTINGS" width="7.4rem"
     actions=${html`<${Button} variant="secondary" icon="book" class="set-guide" onClick=${() => openGuide(0)}>${t('玩法说明')}<//>
       <${Button} variant="primary" icon="check" onClick=${onClose}>${t('完成')}<//>`}>
@@ -162,6 +206,10 @@ export function SettingsModal({ open, onClose }) {
         <${LangToggle} class="set-lang" />
       </div>
       ${mtNote ? html`<p class="set-hint set-lang-note" data-testid="lang-mt-note">${mtNote}</p>` : null}
+      ${allowServerSwitch ? html`<div class="set-row set-server-row">
+        <span class="set-row__label">${t('服务器')}<${MicroLabel}>SERVER<//></span>
+        <${Button} variant="ghost" size="sm" icon="link" class="set-server__btn" onClick=${() => setSpOpen(true)}>${t('更换服务器')}<//>
+      </div>` : null}
       <${Slider} label=${t('背景音乐')} micro="BGM" icon="play" value=${s.bgm} onInput=${(v) => updateSettings({ bgm: v })} />
       <${Slider} label=${t('干员语音')} micro="VOICE" icon="mic" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
       <${Slider} label=${t('音效')} micro="SFX" icon="signal" value=${s.sfx}
@@ -178,5 +226,5 @@ export function SettingsModal({ open, onClose }) {
       <${HotkeySection} keys=${s.keys} touchUi=${touchUi} />
       <p class="set-hint">${touchUi ? t('触屏操作：点击单位选中（撤退 / 出售）· 长按单位或卡牌查看详情 · 拖动部署后滑动选择朝向') : t('右键查看详情')}</p>
     </div>
-  <//>`;
+  <//>${allowServerSwitch ? html`<${ServerPicker} open=${spOpen} current=${server} onPick=${pickServer} onClose=${() => setSpOpen(false)} />` : null}`;
 }
