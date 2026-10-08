@@ -19,7 +19,7 @@
 // recipients onto a different backend (docs/I18N.md-style note: see DESIGN §2 / §8).
 
 /** Configured game-server origin; empty means the front-end and back-end share one origin. */
-export const BACKEND_ORIGIN = 'https://stronghold-protocol.751396.xyz';
+export const BACKEND_ORIGIN = '';
 
 /** Query-string parameter that overrides BACKEND_ORIGIN at runtime. */
 export const SERVER_PARAM = 'server';
