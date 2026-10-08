@@ -30,20 +30,23 @@ export const BUILD_CONFIRMATIONS = 2;
 
 /**
  * Fetch `/healthz` and return its `build` tag (null when unavailable, not reported, or too slow). Never throws.
- * @param {Function} fetchFn @param {{ timeoutMs?: number, backendOrigin?: string, setTimeout?: Function, clearTimeout?: Function }} [o]
+ * @param {Function} fetchFn @param {{ timeoutMs?: number, backendOrigin?: string|(()=>string), setTimeout?: Function, clearTimeout?: Function }} [o]
  * @returns {Promise<string|null>}
  */
 export async function fetchBuild(fetchFn, o = {}) {
   const timeoutMs = Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 ? o.timeoutMs : BUILD_FETCH_TIMEOUT_MS;
   const setT = o.setTimeout || ((fn, ms) => globalThis.setTimeout(fn, ms));
   const clearT = o.clearTimeout || ((h) => globalThis.clearTimeout(h));
+  // `backendOrigin` may be a function so callers can point /healthz at a runtime-chosen backend
+  // (a `?server=` override; public/js/config.js effectiveBackendOrigin) without restarting the guard.
+  const origin = typeof o.backendOrigin === 'function' ? o.backendOrigin() : o.backendOrigin;
   const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
   let timer = null;
   const tooSlow = new Promise((_, reject) => {
     timer = setT(() => { try { ctrl?.abort(); } catch { /* ignore */ } reject(new Error('timeout')); }, timeoutMs);
   });
   try {
-    const res = await Promise.race([fetchFn(backendUrl('/healthz', o.backendOrigin), { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined }), tooSlow]);
+    const res = await Promise.race([fetchFn(backendUrl('/healthz', origin), { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined }), tooSlow]);
     if (!res || !res.ok) return null;
     const body = await res.json();
     return body && typeof body.build === 'string' && body.build ? body.build : null;
@@ -56,7 +59,7 @@ export async function fetchBuild(fetchFn, o = {}) {
 
 /**
  * One check, against the build this page already knows.
- * @param {{ fetchFn?: Function, known?: string|null, timeoutMs?: number, backendOrigin?: string, setTimeout?: Function, clearTimeout?: Function }} [o]
+ * @param {{ fetchFn?: Function, known?: string|null, timeoutMs?: number, backendOrigin?: string|(()=>string), setTimeout?: Function, clearTimeout?: Function }} [o]
  * @returns {Promise<{ status: 'first'|'current'|'new'|'unknown', build: string|null }>}
  */
 export async function checkBuildOnce(o = {}) {
@@ -69,7 +72,7 @@ export async function checkBuildOnce(o = {}) {
 
 /**
  * Watch for a new build.
- * @param {{ fetchFn?: Function, reload?: Function, inMatch?: () => boolean, intervalMs?: number, timeoutMs?: number, backendOrigin?: string,
+ * @param {{ fetchFn?: Function, reload?: Function, inMatch?: () => boolean, intervalMs?: number, timeoutMs?: number, backendOrigin?: string|(()=>string),
  *           setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function,
  *           onStale?: (info: { build: string, known: string|null, waiting: boolean }) => void }} [o]
  * @returns {{ stop: () => void, check: () => Promise<object>, stale: () => boolean, known: () => string|null }}

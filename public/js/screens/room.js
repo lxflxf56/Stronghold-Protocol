@@ -23,6 +23,7 @@ import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
 import { difficultyInfo } from './lobby.js';
+import { serverParamForLink } from '../config.js';
 import { t, tc } from '../../../shared/i18n.js';
 
 /**
@@ -69,11 +70,16 @@ export function roomFacts(room, myId) {
   };
 }
 
-/** Invite link for a room code (current page URL with ?room=CODE). */
-export function inviteLink(code) {
-  const loc = globalThis.location;
+/** Invite link for a room code (current page URL with `?room=CODE`). Carries `?server=<origin>` only when the
+ * visitor chose a backend that differs from the build-time default, so a default-server invite never forces a
+ * different backend on its recipient. */
+export function inviteLink(code, search, loc = globalThis.location) {
   const base = loc ? `${loc.origin}${loc.pathname}` : '';
-  return `${base}?room=${encodeURIComponent(code)}`;
+  const params = new URLSearchParams();
+  params.set('room', String(code));
+  const server = serverParamForLink(search, loc);
+  if (server) params.set('server', server);
+  return `${base}?${params.toString()}`;
 }
 
 /**

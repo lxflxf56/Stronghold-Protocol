@@ -33,7 +33,7 @@
 import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
 import { N_ } from '../../shared/i18n.js';
-import { BACKEND_ORIGIN, backendWsUrl } from './config.js';
+import { backendWsUrl, effectiveBackendOrigin } from './config.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
@@ -96,12 +96,15 @@ export function backoffDelay(attempt, rand = Math.random) {
 
 /**
  * WebSocket URL for the current page (`ws(s)://host/ws`), or for the configured backend domain
- * (`public/js/config.js` BACKEND_ORIGIN) when the front-end and back-end are deployed separately.
- * @param {{protocol: string, host: string}} [loc]
- * @param {string} [origin] backend-origin override (defaults to BACKEND_ORIGIN)
+ * (`public/js/config.js` BACKEND_ORIGIN) when the front-end and back-end are deployed separately. A
+ * `?server=<origin>` URL parameter (a visitor picks it on the title screen; see public/js/config.js)
+ * overrides BACKEND_ORIGIN, so the socket — like the build guard's /healthz — follows the chosen
+ * backend rather than a stale one.
+ * @param {{protocol: string, host: string, search?: string}} [loc]
+ * @param {string} [origin] backend-origin override (defaults to the `?server=` param, else BACKEND_ORIGIN)
  * @returns {string}
  */
-export function defaultWsUrl(loc = globalThis.location, origin = BACKEND_ORIGIN) {
+export function defaultWsUrl(loc = globalThis.location, origin = effectiveBackendOrigin(loc?.search ?? '', loc)) {
   const backend = backendWsUrl('/ws', origin);
   if (backend) return backend;
   if (!loc || !loc.host) return 'ws://localhost:3000/ws';

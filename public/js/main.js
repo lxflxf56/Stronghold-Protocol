@@ -51,6 +51,7 @@ import { installDeviceSupport } from './ui/device.js';
 import { LoadoutHost } from './screens/loadout.js';
 import { installLoadoutSync, installOwnershipSync, installDiySync } from './ui/loadoutSync.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { effectiveBackendOrigin, parseServerParam } from './config.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 
@@ -332,10 +333,15 @@ async function boot() {
   const pendingJoin = parseRoomParam(location.search);
   const savedName = sanitizeName(identity.loadName());
   const entered = identity.wasEntered() && !!savedName;
+  // The title-screen switcher labels the backend the visitor is on. `ui.server` holds the `?server=` override only
+  // ('' means the default backend — build-time BACKEND_ORIGIN, or the page origin in single-origin deploys); the actual
+  // connection origin is re-read from location.search on every reconnect (defaultWsUrl / resolvedBackend), so a later
+  // switch is picked up without storing a second source of truth.
+  const server = parseServerParam(location.search);
   store.set((s) => ({
     me: { ...s.me, name: savedName },
     session: { entered },
-    ui: { ...s.ui, pendingJoin },
+    ui: { ...s.ui, pendingJoin, server },
   }));
 
   wireNet();
@@ -375,6 +381,8 @@ async function boot() {
     startBuildGuard({
       inMatch: () => selectRoute(store.get()) === 'game',
       onStale: ({ waiting }) => { if (waiting) store.patch('ui', { buildStale: true }); },
+      // point /healthz at the backend this page actually uses (a `?server=` override may differ from the build-time default)
+      backendOrigin: effectiveBackendOrigin,
     });
   } catch (err) {
     console.warn('[app] build guard failed to start', err);

@@ -1055,5 +1055,13 @@
   "选择「{name}」的朝向": "Choose {name}'s facing",
   "选择朝向": "Choose a facing",
   "朝向：{dir}": "Facing: {dir}",
-  "开发版 · 不稳定，请勿用于公开服务器": "Development build · unstable, not for public servers"
+  "开发版 · 不稳定，请勿用于公开服务器": "Development build · unstable, not for public servers",
+  "更换服务器": "Switch server",
+  "更换后端服务器": "Switch backend server",
+  "服务器": "Server",
+  "服务器地址": "Server address",
+  "留空使用默认服务器": "leave empty for the default server",
+  "服务器地址无效，请输入以 http(s):// 开头的完整地址": "Invalid server address; enter a full address starting with http(s)://",
+  "服务器已更换": "Server switched",
+  "更换服务器将断开当前连接并重连": "Switching server will disconnect and reconnect"
 }

@@ -280,7 +280,7 @@ export function TitleScreen() {
       </div>
     </main>
 
-    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} />
+    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} allowServerSwitch />
 
     <footer class="title-foot">
       <span>${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>
