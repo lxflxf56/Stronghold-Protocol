@@ -24,6 +24,23 @@ export const BACKEND_ORIGIN = '';
 /** Query-string parameter that overrides BACKEND_ORIGIN at runtime. */
 export const SERVER_PARAM = 'server';
 
+// ---- separation gate --------------------------------------------------------------------------
+// Front/back-end separation support is a BUILD-TIME setting: tools/build-frontend.mjs
+// rewrites the initial value below to the build's ALLOW_SEPARATE_FRONTEND ('1' by
+// default for builds), so the static site ships with the runtime server switcher and
+// honours a `?server=` override. A build with ALLOW_SEPARATE_FRONTEND=0 ships without
+// separation: the override is ignored and every URL stays on the default backend.
+// The SERVER's own ALLOW_SEPARATE_FRONTEND (default off) is a separate runtime
+// switch — it decides whether /healthz carries CORS headers (server/http/config.js),
+// not this client-side setting.
+let SEPARATION_ENABLED = false;
+
+/** Set the gate at runtime (tests; app code reads the build-baked value). @param {boolean} on */
+export function setSeparationEnabled(on) { SEPARATION_ENABLED = on === true; }
+
+/** Whether the server allows a separated front end (a `?server=` override may take effect). @returns {boolean} */
+export function separationEnabled() { return SEPARATION_ENABLED; }
+
 /**
  * Normalise a backend origin typed/pasted by a user (or read from the URL): a full http(s) origin,
  * or '' when the input is not an absolute http(s) URL.
@@ -67,10 +84,28 @@ export function parseServerParam(search) {
 export function effectiveBackendOrigin(search, loc = globalThis.location) {
   let s = search;
   if (s === undefined || s === null) s = loc?.search ?? '';
-  const override = parseServerParam(s);
+  // The override only takes effect when the server allows separation — otherwise the page
+  // stays on the default backend no matter what the URL says.
+  const override = separationEnabled() ? parseServerParam(s) : '';
   if (override) return override;
   if (BACKEND_ORIGIN) return BACKEND_ORIGIN;
   return loc?.origin || '';
+}
+
+/**
+ * Whether the backend this page connects to is the default one (`BACKEND_ORIGIN`, or the
+ * page's own origin in a single-origin deployment) — the only server whose stored reconnect
+ * token was issued. A `?server=` override that differs from it is a foreign backend: the
+ * token cannot resume a session there, so the client must never send it there (a fresh
+ * session is requested instead).
+ * @param {string} [search] a URL search string; defaults to the live page's
+ * @param {{origin?: string, search?: string}} [loc] page location
+ * @returns {boolean}
+ */
+export function onDefaultBackend(search, loc = globalThis.location) {
+  const eff = effectiveBackendOrigin(search, loc);
+  const def = BACKEND_ORIGIN || (loc?.origin || '');
+  return !eff || eff === def;
 }
 
 /**

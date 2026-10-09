@@ -5,6 +5,10 @@
 //     peers such as a local cloudflared; '1' always; '0' never) → net.js trustProxy;
 //   * FRONTEND_ORIGIN (http(s) origin, default '*' — the /healthz endpoint is public and carries no credentials) →
 //     the CORS origin the request listener allows to read /healthz from another domain (front-end / back-end separation);
+//     only takes effect when ALLOW_SEPARATE_FRONTEND is on;
+//   * ALLOW_SEPARATE_FRONTEND (default off) → is front/back-end separation allowed at all? Off: /healthz carries
+//     no CORS headers (no cross-origin reads) and reports separation:false, so a separated front end gets no build
+//     tag and no runtime server switcher; on: FRONTEND_ORIGIN decides the CORS origin and the switcher is offered;
 //   * DEBUG → the console logger's debug level;
 //   * the served directories (public/, data/, shared/ and the content packs' packs/ of this repository unless the
 //     options name others), and which startServer() options are handed on to net.js Network and lobby.js Lobby.
@@ -84,6 +88,22 @@ export function parseTrustProxy(v) {
 export function parseFrontendOrigin(value = process.env.FRONTEND_ORIGIN) {
   const origin = String(value ?? '').trim();
   return origin || '*';
+}
+
+/**
+ * Whether front/back-end separation is allowed on the SERVER (env
+ * ALLOW_SEPARATE_FRONTEND, default off — the runtime opt-in for cross-origin
+ * /healthz reads). Off: /healthz carries no CORS headers (it stays readable on
+ * its own origin only) and reports separation:false. On: FRONTEND_ORIGIN decides
+ * the CORS origin ('*' when unset) and /healthz reports separation:true.
+ * This does not change the client's separation support: that is a build-time
+ * setting baked in by tools/build-frontend.mjs (on by default for builds).
+ * @param {string} [value] ALLOW_SEPARATE_FRONTEND ('0' / 'false' / 'off' / 'no' / empty = off)
+ * @returns {boolean}
+ */
+export function parseSeparationEnabled(value = process.env.ALLOW_SEPARATE_FRONTEND) {
+  const v = String(value ?? '').trim().toLowerCase();
+  return v !== '' && v !== '0' && v !== 'false' && v !== 'off' && v !== 'no';
 }
 
 /** The console logger (`quiet` → silent; debug lines only with DEBUG set). */

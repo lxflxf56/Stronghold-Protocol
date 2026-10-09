@@ -3,19 +3,30 @@
 // URL, the server's /healthz CORS header, and the browser-only static build output.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, rm, stat } from 'node:fs/promises';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BACKEND_ORIGIN, backendUrl, backendWsUrl, SERVER_PARAM,
-  normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl,
+  normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl, onDefaultBackend,
+  setSeparationEnabled,
 } from '../public/js/config.js';
-import { defaultWsUrl } from '../public/js/net.js';
+import { defaultWsUrl, Net } from '../public/js/net.js';
 import { fetchBuild } from '../public/js/ui/buildGuard.js';
-import { parseFrontendOrigin, startServer } from '../server/index.js';
+import { parseFrontendOrigin, parseSeparationEnabled, startServer } from '../server/index.js';
 import { buildFrontend, isBrowserSimFile } from '../tools/build-frontend.mjs';
 
 const TEST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/** Run a test body with the build-time separation gate enabled (the un-baked source default is off). */
+const withSeparation = (fn) => {
+  setSeparationEnabled(true);
+  try { return fn(); } finally { setSeparationEnabled(false); };
+};
+
+/** The default backend for the test page: the configured BACKEND_ORIGIN (a
+ * deployment bakes one in — docs/DEPLOY.md §2.5), else the page origin. */
+const DEF = BACKEND_ORIGIN || 'https://game.example.com';
 
 /** Every regular file under `dir`, as file names (the sim tree has no non-JS files). */
 async function listFiles(dir) {
@@ -29,9 +40,8 @@ async function listFiles(dir) {
 }
 
 test('config: an empty BACKEND_ORIGIN keeps every URL on the front-end origin', () => {
-  assert.equal(BACKEND_ORIGIN, '');
-  assert.equal(backendUrl('/healthz'), '/healthz');
-  assert.equal(backendWsUrl('/ws'), '');
+  assert.equal(backendUrl('/healthz', ''), '/healthz');
+  assert.equal(backendWsUrl('/ws', ''), '');
 });
 
 test('config: a configured backend domain produces absolute http(s) / ws(s) URLs', () => {
@@ -43,7 +53,7 @@ test('config: a configured backend domain produces absolute http(s) / ws(s) URLs
 
 test('net: defaultWsUrl uses the configured backend domain, not the page domain', () => {
   const page = { protocol: 'https:', host: 'game.example.com' };
-  assert.equal(defaultWsUrl(page), 'wss://game.example.com/ws');
+  assert.equal(defaultWsUrl(page), backendWsUrl('/ws', DEF));
   assert.equal(defaultWsUrl(page, 'https://api.example.com'), 'wss://api.example.com/ws');
   assert.equal(defaultWsUrl(page, 'http://api.example.com:3001'), 'ws://api.example.com:3001/ws');
 });
@@ -52,9 +62,9 @@ test('buildGuard: /healthz moves to the configured backend domain', async () => 
   const urls = [];
   const fetchFn = async (url) => { urls.push(url); return { ok: true, json: async () => ({ build: 'abc' }) }; };
   assert.equal(await fetchBuild(fetchFn), 'abc');
-  assert.deepEqual(urls, ['/healthz']);
+  assert.deepEqual(urls, [backendUrl('/healthz')]);
   assert.equal(await fetchBuild(fetchFn, { backendOrigin: 'https://api.example.com' }), 'abc');
-  assert.deepEqual(urls, ['/healthz', 'https://api.example.com/healthz']);
+  assert.deepEqual(urls, [backendUrl('/healthz'), 'https://api.example.com/healthz']);
 });
 
 test('server: parseFrontendOrigin defaults to * and keeps a configured origin', () => {
@@ -63,14 +73,54 @@ test('server: parseFrontendOrigin defaults to * and keeps a configured origin', 
   assert.equal(parseFrontendOrigin('https://game.example.com'), 'https://game.example.com');
 });
 
+test('server: parseSeparationEnabled is off by default and only truthy words turn it on', () => {
+  assert.equal(parseSeparationEnabled(), false, 'unset → off');
+  assert.equal(parseSeparationEnabled(''), false);
+  assert.equal(parseSeparationEnabled('0'), false);
+  assert.equal(parseSeparationEnabled('false'), false);
+  assert.equal(parseSeparationEnabled('off'), false);
+  assert.equal(parseSeparationEnabled('no'), false);
+  assert.equal(parseSeparationEnabled('1'), true);
+  assert.equal(parseSeparationEnabled('true'), true);
+  assert.equal(parseSeparationEnabled('on'), true);
+  assert.equal(parseSeparationEnabled('  YES  '), true);
+});
+
+test('server: /healthz carries no CORS headers and reports separation:false when separation is off (default)', async () => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.port}/healthz`, { headers: { Origin: 'https://game.example.com' } });
+    assert.equal(res.ok, true);
+    assert.equal(res.headers.get('access-control-allow-origin'), null, 'no ACAO header — cross-origin reads are blocked');
+    assert.equal(res.headers.get('vary'), null);
+    const body = await res.json();
+    assert.equal(body.separation, false);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('server: /healthz answers cross-origin requests with the configured front-end origin', async () => {
-  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, frontendOrigin: 'https://game.example.com' });
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, separation: true, frontendOrigin: 'https://game.example.com' });
   try {
     const res = await fetch(`http://127.0.0.1:${srv.port}/healthz`, { headers: { Origin: 'https://game.example.com' } });
     assert.equal(res.ok, true);
     assert.equal(res.headers.get('access-control-allow-origin'), 'https://game.example.com');
     assert.equal(res.headers.get('vary'), 'Origin');
-    assert.equal((await res.json()).ok, true);
+    assert.equal((await res.json()).separation, true);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('server: /healthz allows any front-end origin when separation is on and FRONTEND_ORIGIN is unset', async () => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', quiet: true, separation: true });
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.port}/healthz`, { headers: { Origin: 'https://game.example.com' } });
+    assert.equal(res.ok, true);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+    assert.equal(res.headers.get('vary'), null, '* needs no Vary');
+    assert.equal((await res.json()).separation, true);
   } finally {
     await srv.close();
   }
@@ -120,6 +170,27 @@ test('static build: refuses to write a source directory', async () => {
   await assert.rejects(buildFrontend({ out: join(TEST_ROOT, 'test', 'not-output'), quiet: true }), /test sources/);
 });
 
+test('static build: bakes the separation default into js/config.js (on by default for builds)', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-sep');
+  const saved = process.env.ALLOW_SEPARATE_FRONTEND;
+  try {
+    delete process.env.ALLOW_SEPARATE_FRONTEND; // build default: '1' → separation baked in
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /let SEPARATION_ENABLED = true;/, 'a default build ships with separation support');
+    process.env.ALLOW_SEPARATE_FRONTEND = '0'; // explicit off → baked as false
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /let SEPARATION_ENABLED = false;/, 'ALLOW_SEPARATE_FRONTEND=0 bakes a separation-free build');
+  } finally {
+    if (saved === undefined) delete process.env.ALLOW_SEPARATE_FRONTEND;
+    else process.env.ALLOW_SEPARATE_FRONTEND = saved;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
 // ---- ?server=<origin> runtime backend override (title-screen switcher; public/js/config.js) ----
 
 const loc = (href) => { const u = new URL(href); return { href: u.href, origin: u.origin, protocol: u.protocol, host: u.host, pathname: u.pathname, search: u.search, hash: u.hash }; };
@@ -133,6 +204,13 @@ test('normalizeOrigin: http(s) origins only, strips path/auth; empty otherwise',
   assert.equal(normalizeOrigin('https://api.example.com/path'), 'https://api.example.com');
   assert.equal(normalizeOrigin('ftp://x.com'), '', 'non-http(s) scheme → default');
   assert.equal(normalizeOrigin('not-a-url'), '', 'relative / garbage → default');
+  assert.equal(normalizeOrigin('javascript:alert(1)'), '', 'script scheme → default');
+  assert.equal(normalizeOrigin('JAVASCRIPT:alert(1)'), '', 'uppercase script scheme → default');
+  assert.equal(normalizeOrigin('java\tscript:alert(1)'), '', 'control-char evasion → default (URL parser strips it, then rejects)');
+  assert.equal(normalizeOrigin('data:text/html,<script>alert(1)</script>'), '', 'data: URL → default');
+  assert.equal(normalizeOrigin('vbscript:msgbox(1)'), '', 'vbscript → default');
+  assert.equal(normalizeOrigin('blob:https://game.example.com/uuid'), '', 'blob: → default');
+  assert.equal(normalizeOrigin('https://api.example.com/any?path=1#frag'), 'https://api.example.com', 'path/query/hash never survive');
   assert.equal(normalizeOrigin(''), '', 'empty → default');
   assert.equal(normalizeOrigin('  https://api.example.com  '), 'https://api.example.com', 'trimmed first');
 });
@@ -144,6 +222,8 @@ test('parseServerParam: reads `?server=` only; valid http(s) origin or empty', (
   assert.equal(parseServerParam('?server='), '');
   assert.equal(parseServerParam('?server=not-a-url'), '');
   assert.equal(parseServerParam('?server=ftp://x.com'), '');
+  assert.equal(parseServerParam('?server=javascript:alert(1)'), '', 'script scheme → default');
+  assert.equal(parseServerParam('?server=data:text/html,<script>'), '', 'data: URL → default');
   assert.equal(parseServerParam('?server=https://api.example.com'), 'https://api.example.com');
   assert.equal(parseServerParam('?server=http://api.example.com:3001'), 'http://api.example.com:3001');
   assert.equal(parseServerParam('?server=https://api.example.com/path'), 'https://api.example.com');
@@ -152,21 +232,31 @@ test('parseServerParam: reads `?server=` only; valid http(s) origin or empty', (
 });
 
 test('effectiveBackendOrigin: override wins, invalid falls back, default is BACKEND_ORIGIN then page origin', () => {
-  // single-origin default (BACKEND_ORIGIN === ''): the page origin IS the default backend
-  const g = loc('https://game.example.com/');
-  assert.equal(effectiveBackendOrigin('', g), 'https://game.example.com');
-  assert.equal(effectiveBackendOrigin('?server=https://api.other.com', g), 'https://api.other.com');
-  assert.equal(effectiveBackendOrigin('?server=bogus', g), 'https://game.example.com', 'invalid param → default');
-  assert.equal(effectiveBackendOrigin('?server=', g), 'https://game.example.com', 'empty param → default');
-  assert.equal(effectiveBackendOrigin(undefined, g), 'https://game.example.com', 'no search → default');
+  withSeparation(() => {
+    // single-origin default (BACKEND_ORIGIN === ''): the page origin IS the default backend
+    const g = loc('https://game.example.com/');
+    assert.equal(effectiveBackendOrigin('', g), DEF);
+    assert.equal(effectiveBackendOrigin('?server=https://api.other.com', g), 'https://api.other.com');
+    assert.equal(effectiveBackendOrigin('?server=bogus', g), DEF, 'invalid param → default');
+    assert.equal(effectiveBackendOrigin('?server=', g), DEF, 'empty param → default');
+    assert.equal(effectiveBackendOrigin(undefined, g), DEF, 'no search → default');
+  });
+});
+
+test('effectiveBackendOrigin: a ?server= override is ignored until the server allows separation', () => {
+  const g = loc('https://game.example.com/?server=https://api.other.com');
+  assert.equal(effectiveBackendOrigin(undefined, g), DEF, 'separation off (default) → override ignored, default backend');
+  withSeparation(() => assert.equal(effectiveBackendOrigin(undefined, g), 'https://api.other.com', 'separation on → override wins'));
 });
 
 test('serverParamForLink: omits the param on the default backend, includes it only for a real override', () => {
-  const g = loc('https://game.example.com/');
-  assert.equal(serverParamForLink('', g), '', 'on the default backend (page origin) → no param');
-  assert.equal(serverParamForLink('?server=https://api.other.com', g), 'https://api.other.com');
-  // an override that equals the default backend is still the default → no param
-  assert.equal(serverParamForLink('?server=https://game.example.com', g), '', 'override == default → no param');
+  withSeparation(() => {
+    const g = loc('https://game.example.com/');
+    assert.equal(serverParamForLink('', g), '', 'on the default backend (page origin) → no param');
+    assert.equal(serverParamForLink('?server=https://api.other.com', g), 'https://api.other.com');
+    // an override that equals the default backend is still the default → no param
+    assert.equal(serverParamForLink('?server=' + DEF, g), '', 'override == default → no param');
+  });
 });
 
 test('setServerInUrl: writes ?server=, preserves room/lang/hash, clears it for the default', () => {
@@ -179,9 +269,9 @@ test('setServerInUrl: writes ?server=, preserves room/lang/hash, clears it for t
   const h2 = fakeHist();
   assert.equal(setServerInUrl('', h2, withParam), '?room=ABCD');
   assert.equal(h2.__last, '/lobby?room=ABCD');
-  // switching back to the page origin clears the param (override == default)
+  // switching back to the default backend clears the param (override == default)
   const h3 = fakeHist();
-  assert.equal(setServerInUrl('https://game.example.com', h3, withParam), '?room=ABCD');
+  assert.equal(setServerInUrl(DEF, h3, withParam), '?room=ABCD');
   assert.equal(h3.__last, '/lobby?room=ABCD');
 });
 
@@ -190,10 +280,63 @@ test('setServerInUrl: returns null without a live location', () => {
 });
 
 test('net: defaultWsUrl follows a ?server= override and falls back to the page origin on an invalid one', () => {
-  const page = (search) => ({ protocol: 'https:', host: 'game.example.com', search });
-  assert.equal(defaultWsUrl(page('?server=https://api.example.com')), 'wss://api.example.com/ws');
-  assert.equal(defaultWsUrl(page('?server=http://api.example.com:3001')), 'ws://api.example.com:3001/ws');
-  assert.equal(defaultWsUrl(page('?server=bogus')), 'wss://game.example.com/ws', 'invalid param → page origin');
-  assert.equal(defaultWsUrl(page('')), 'wss://game.example.com/ws', 'no param → page origin (default)');
-  assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }), 'ws://g.com/ws');
+  withSeparation(() => {
+    const page = (search) => ({ protocol: 'https:', host: 'game.example.com', search });
+    assert.equal(defaultWsUrl(page('?server=https://api.example.com')), 'wss://api.example.com/ws');
+    assert.equal(defaultWsUrl(page('?server=http://api.example.com:3001')), 'ws://api.example.com:3001/ws');
+    assert.equal(defaultWsUrl(page('?server=bogus')), backendWsUrl('/ws', DEF), 'invalid param → default backend');
+    assert.equal(defaultWsUrl(page('?server=javascript:alert(1)')), backendWsUrl('/ws', DEF), 'script scheme → default backend, never in the socket URL');
+    assert.equal(defaultWsUrl(page('')), backendWsUrl('/ws', DEF), 'no param → default backend');
+    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'g.com', search: '' }, ''), 'ws://g.com/ws', 'no configured backend → derived from the page');
+  });
+});
+
+// ---- reconnect-token safety: hello must not leak the stored token to a foreign backend ----
+
+test('onDefaultBackend: true only when the connection targets the default backend', () => {
+  withSeparation(() => {
+    const g = { origin: 'https://game.example.com', search: '' };
+    assert.equal(onDefaultBackend('', g), true, 'single-origin, no override → default');
+    assert.equal(onDefaultBackend('?server=' + DEF, g), true, 'override equal to the default → default');
+    assert.equal(onDefaultBackend('?server=', g), true, 'empty override → default');
+    assert.equal(onDefaultBackend('?server=bogus', g), true, 'invalid override falls back to the default');
+    assert.equal(onDefaultBackend('?server=https://api.other.com', g), false, 'foreign override → not the default');
+    assert.equal(onDefaultBackend(undefined, undefined), true, 'no live location (Node) → default');
+  });
+});
+
+test('net: hello carries the reconnect token only on the default backend', () => {
+  withSeparation(() => {
+  const timers = {
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+  };
+  /** Connect with a fake page location; return the hello the socket sent. */
+  const drive = (search) => {
+    const sockets = [];
+    const FakeWS = class {
+      constructor(url) { this.url = url; this.readyState = 1; this.sent = []; sockets.push(this); }
+      send(data) { this.sent.push(JSON.parse(data)); }
+      close() { this.readyState = 3; }
+    };
+    const saved = globalThis.location;
+    globalThis.location = { origin: 'https://game.example.com', protocol: 'https:', host: 'game.example.com', search };
+    try {
+      const net = new Net({ WebSocket: FakeWS, timers, now: () => 0, random: () => 0.5, getToken: () => 'tok-1' });
+      net.setName('凯尔希');
+      const sock = sockets.at(-1);
+      sock.onopen?.();
+      return sock.sent.find((m) => m.t === 'hello');
+    } finally {
+      if (saved === undefined) delete globalThis.location;
+      else globalThis.location = saved;
+    }
+  };
+  assert.equal(drive('').token, 'tok-1', 'default backend (page origin) → token sent');
+  assert.equal(drive('?server=' + DEF).token, 'tok-1', 'override equal to the default → token sent');
+  assert.equal(drive('?server=bogus').token, 'tok-1', 'invalid override falls back to the default → token sent');
+  assert.equal(
+    drive('?server=https://api.other.com').token, undefined,
+    'foreign ?server= backend → NO token: a fresh session instead of leaking the stored one');
+  assert.equal(drive('?server=https://api.other.com').name, '凯尔希', 'hello itself is still sent (name only)');
+  });
 });

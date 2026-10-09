@@ -17,6 +17,7 @@ import { GuideButton } from '../ui/guide.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
 import { store, useStore, shallowEqual } from '../store.js';
+import { separationEnabled } from '../config.js';
 import { data, useData } from '../data.js';
 import { FullscreenButton, detectFeatures } from '../ui/device.js';
 import { LangToggle, useLang } from '../ui/lang.js';
@@ -280,7 +281,7 @@ export function TitleScreen() {
       </div>
     </main>
 
-    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} allowServerSwitch />
+    <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} allowServerSwitch=${separationEnabled()} />
 
     <footer class="title-foot">
       <span>${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>

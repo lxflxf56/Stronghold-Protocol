@@ -20,12 +20,18 @@
 //   --out  output directory (default: <repo>/dist); must be inside the repository and must not
 //          overlap a source directory
 //   --quiet suppress the summary line
+//   ALLOW_SEPARATE_FRONTEND (build-time, default '1'): the static site ships with front/back-end
+//   separation support — the value is baked into js/config.js (the runtime server switcher and
+//   the `?server=` override). The server's own ALLOW_SEPARATE_FRONTEND (default off) is a
+//   separate runtime switch: it decides whether /healthz carries CORS headers. Set '0' at
+//   build time to ship a separation-free build.
 // Unknown options are errors (exit code 2).
 
 import { realpathSync } from 'node:fs';
-import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseSeparationEnabled } from '../server/http/config.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const USAGE = 'usage: node tools/build-frontend.mjs [--out <dir>] [--quiet]';
@@ -75,6 +81,29 @@ export function isBrowserSimFile(name) {
 /** Dot files and editor backups are never part of the served site. @param {string} name */
 function isServableName(name) {
   return !name.startsWith('.') && !name.endsWith('~');
+}
+
+/**
+ * The line in public/js/config.js whose value the build rewrites to the
+ * build-time separation default (ALLOW_SEPARATE_FRONTEND, '1' for builds).
+ */
+const SEPARATION_LINE = 'let SEPARATION_ENABLED = false;';
+
+/**
+ * Bake the build-time separation default into the output's js/config.js, so the
+ * static site ships with front/back-end separation support (build-time
+ * ALLOW_SEPARATE_FRONTEND, '1' unless set otherwise). The server's runtime
+ * switch (/healthz `separation`, default off) overrides it at page boot.
+ * @param {string} configPath absolute path of the output js/config.js
+ * @param {boolean} separation build-time separation default
+ */
+async function bakeSeparationDefault(configPath, separation) {
+  let src;
+  try { src = await readFile(configPath, 'utf8'); } catch { throw new Error(`cannot bake the separation default: ${configPath} is not readable`); }
+  if (!src.includes(SEPARATION_LINE)) {
+    throw new Error(`separation line not found in ${configPath} — update SEPARATION_LINE in tools/build-frontend.mjs`);
+  }
+  await writeFile(configPath, src.replace(SEPARATION_LINE, `let SEPARATION_ENABLED = ${separation};`));
 }
 
 /**
@@ -165,6 +194,10 @@ async function copyTree(src, dst, filter) {
 export async function buildFrontend(opts = {}) {
   const { out = join(ROOT, 'dist'), quiet = false } = opts;
   const outputDir = resolveOutput(out);
+  // The static site ships with separation support by default (build-time
+  // ALLOW_SEPARATE_FRONTEND, '1' unless set otherwise); the server's runtime
+  // switch is read from /healthz at page boot.
+  const separation = opts.separation ?? parseSeparationEnabled(process.env.ALLOW_SEPARATE_FRONTEND ?? '1');
 
   const missing = [];
   for (const rel of REQUIRED_FILES) {
@@ -186,6 +219,9 @@ export async function buildFrontend(opts = {}) {
     counts[mount.source] = count;
     files += count;
   }
+
+  // Bake the build-time separation default into the served config.
+  await bakeSeparationDefault(join(outputDir, 'js', 'config.js'), separation);
 
   if (!quiet) console.log(`frontend: ${files} files -> ${outputDir}`);
   return { outputDir, files, counts };

@@ -7,10 +7,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkBuildOnce, startBuildGuard, fetchBuild, BUILD_CHECK_MS, BUILD_FETCH_TIMEOUT_MS } from '../../public/js/ui/buildGuard.js';
+import { backendUrl } from '../../public/js/config.js';
 
 /** A fake fetch answering /healthz with `build` (null → the frame carries none). */
 const fetchOf = (build) => async (url, init) => {
-  assert.equal(url, '/healthz');
+  assert.equal(url, backendUrl('/healthz'));
   assert.equal(init.cache, 'no-store');
   return { ok: true, status: 200, json: async () => ({ ok: true, build }) };
 };

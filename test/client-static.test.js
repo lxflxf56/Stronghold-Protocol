@@ -421,8 +421,10 @@ describe('net.js', () => {
 
   test('defaultWsUrl', async () => {
     const { defaultWsUrl } = await mod('net.js');
-    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'a:3000' }), 'ws://a:3000/ws');
-    assert.equal(defaultWsUrl({ protocol: 'https:', host: 'x.io' }), 'wss://x.io/ws');
+    const { backendWsUrl, BACKEND_ORIGIN } = await mod('config.js');
+    // a deployment-configured BACKEND_ORIGIN wins over the page origin
+    assert.equal(defaultWsUrl({ protocol: 'http:', host: 'a:3000' }), backendWsUrl('/ws', BACKEND_ORIGIN || 'http://a:3000'));
+    assert.equal(defaultWsUrl({ protocol: 'https:', host: 'x.io' }), backendWsUrl('/ws', BACKEND_ORIGIN || 'https://x.io'));
   });
 
   test('connect without a name → connected + ping; setName → hello with token & version', async () => {
@@ -1078,14 +1080,21 @@ describe('screen helpers', () => {
 
   test('room: inviteLink carries ?server= only when the backend is not the default', async () => {
     const { inviteLink } = await mod('screens/room.js');
-    const g = { origin: 'https://game.example.com', pathname: '/lobby', search: '' };
-    // default backend (page origin) → no server param
-    assert.match(inviteLink('ABCD', '', g), /\?room=ABCD$/);
-    // override to another backend → ?server= is appended (encoded)
-    const withServer = inviteLink('ABCD', '?server=https://api.other.com', g);
-    assert.match(withServer, /\?room=ABCD&server=https%3A%2F%2Fapi.other.com$/);
-    // an override equal to the default backend is the default → no server param
-    assert.match(inviteLink('ABCD', '?server=https://game.example.com', g), /\?room=ABCD$/);
+    const { setSeparationEnabled, BACKEND_ORIGIN } = await mod('config.js');
+    const def = BACKEND_ORIGIN || 'https://game.example.com';
+    setSeparationEnabled(true);
+    try {
+      const g = { origin: 'https://game.example.com', pathname: '/lobby', search: '' };
+      // default backend (configured BACKEND_ORIGIN, else the page origin) → no server param
+      assert.match(inviteLink('ABCD', '', g), /\?room=ABCD$/);
+      // override to another backend → ?server= is appended (encoded)
+      const withServer = inviteLink('ABCD', '?server=https://api.other.com', g);
+      assert.match(withServer, /\?room=ABCD&server=https%3A%2F%2Fapi.other.com$/);
+      // an override equal to the default backend is the default → no server param
+      assert.match(inviteLink('ABCD', '?server=' + def, g), /\?room=ABCD$/);
+    } finally {
+      setSeparationEnabled(false);
+    }
   });
 
   test('room: spectator seats (community report #26) — isSpectating; roomFacts never counts a spectator as a player', async () => {
