@@ -12,6 +12,12 @@
 #      (public/fonts, data/assets.json and data/local-assets.json are copied from the build context when present)
 # Without any art the game still runs with placeholder visuals.
 #
+# Layer order (the build cache): every step needs only what the stages above it copied, and the
+# least-changing inputs come first — a source edit re-runs nothing above it. The runtime image
+# keeps one layer per concern, so a small update re-pulls only that layer, not the ~130 MB of
+# dependencies. .dockerignore keeps the build context (what the client sends before anything runs)
+# down to the files the image actually uses.
+#
 # Run:  docker run -d --name stronghold -p 3000:3000 --restart unless-stopped stronghold-protocol
 # Env:  PORT (3000), HOST (0.0.0.0), SP_COMBAT (client|server), SP_VERIFY (off|sample|all), TRUST_PROXY (auto|1|0), DEBUG
 
@@ -22,30 +28,38 @@ FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts: the postinstall (tools/vendor.mjs) runs in the next stage, once the sources are there
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
+# The npm cache is a BuildKit cache mount: it survives rebuilds (a lockfile change re-downloads only
+# what changed) and never becomes an image layer, so no `npm cache clean` is needed here.
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
-# ---- 2. vendor libs + optional art download ---------------------------------------------------------
-FROM deps AS build
+# ---- 2. vendored client libraries (cached while the lockfile and tools/vendor.mjs are unchanged) ----
+# vendor.mjs copies files out of node_modules into public/vendor — it reads no application source,
+# so it runs before the sources are copied and stays cached across code edits.
+FROM deps AS vendor
+COPY tools ./tools
+RUN node tools/vendor.mjs
+
+# ---- 3. sources + optional art download (least-changing first) --------------------------------------
+FROM vendor AS build
 ARG FETCH_ASSETS=0
+COPY data ./data
+COPY docs/research ./docs/research
 COPY shared ./shared
 COPY server ./server
-COPY tools ./tools
-COPY data ./data
 COPY public ./public
-COPY docs/research ./docs/research
-RUN node tools/vendor.mjs \
- && if [ "$FETCH_ASSETS" = "1" ]; then \
+RUN if [ "$FETCH_ASSETS" = "1" ]; then \
       node tools/fetch-assets.mjs || echo "WARNING: art download incomplete; the image falls back to placeholder art"; \
     fi \
  && rm -rf .cache
 
-# ---- 3. runtime ---------------------------------------------------------------------------------------
+# ---- 4. runtime ---------------------------------------------------------------------------------------
 FROM ${NODE_IMAGE}
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0
 WORKDIR /app
-COPY --from=deps /app/package.json ./package.json
+COPY --from=deps /app/package.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/shared ./shared
 COPY --from=build /app/server ./server

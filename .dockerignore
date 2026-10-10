@@ -11,12 +11,19 @@ logs
 *.log
 docs/img
 # the image needs only the research JSON tables (server/sim/nodeData.js fallback), not the notes
+docs/*
+!docs/research/
 docs/research/*.md
 # game art is mounted at runtime or downloaded with --build-arg FETCH_ASSETS=1, never sent from the host
 public/assets
 # generated from node_modules inside the image
 public/vendor
-scripts/service.env.cmd
+# not in the image: release packages (tools/package.mjs output), type-check and host-launch helpers,
+# and content packs (host-side drops-in, docs/PACKS.md — the image runs without them)
+dist
+types
+scripts
+packs
 .DS_Store
 Thumbs.db
 .env
