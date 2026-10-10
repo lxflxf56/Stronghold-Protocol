@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   BACKEND_ORIGIN, backendUrl, backendWsUrl, SERVER_PARAM,
   normalizeOrigin, parseServerParam, effectiveBackendOrigin, serverParamForLink, setServerInUrl, onDefaultBackend,
@@ -187,6 +187,33 @@ test('static build: bakes the separation default into js/config.js (on by defaul
   } finally {
     if (saved === undefined) delete process.env.ALLOW_SEPARATE_FRONTEND;
     else process.env.ALLOW_SEPARATE_FRONTEND = saved;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('static build: bakes the build-time BACKEND_ORIGIN into js/config.js (empty by default)', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-origin');
+  const saved = process.env.BACKEND_ORIGIN;
+  try {
+    delete process.env.BACKEND_ORIGIN; // build default: '' → single-origin
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /export const BACKEND_ORIGIN = "";/, 'a default build stays single-origin');
+    process.env.BACKEND_ORIGIN = 'https://api.example.com';
+    await buildFrontend({ out, quiet: true });
+    assert.match(
+      await readFile(join(out, 'js', 'config.js'), 'utf8'),
+      /export const BACKEND_ORIGIN = "https:\/\/api.example.com";/, 'BACKEND_ORIGIN is baked into the build');
+    const baked = await import(pathToFileURL(join(out, 'js', 'config.js')).href);
+    assert.equal(baked.BACKEND_ORIGIN, 'https://api.example.com', 'the baked module exports the configured origin');
+    assert.equal(baked.backendUrl('/healthz'), 'https://api.example.com/healthz');
+    await assert.rejects(
+      () => { process.env.BACKEND_ORIGIN = 'not-a-url'; return buildFrontend({ out, quiet: true }); },
+      /BACKEND_ORIGIN must be an http/, 'an invalid origin fails the build instead of shipping a broken config');
+  } finally {
+    if (saved === undefined) delete process.env.BACKEND_ORIGIN;
+    else process.env.BACKEND_ORIGIN = saved;
     await rm(out, { recursive: true, force: true });
   }
 });
