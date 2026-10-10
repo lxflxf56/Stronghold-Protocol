@@ -18,7 +18,12 @@
 // origin differs from the default, so a link that targets the default server does not force
 // recipients onto a different backend (docs/I18N.md-style note: see DESIGN §2 / §8).
 
-/** Configured game-server origin; empty means the front-end and back-end share one origin. */
+/**
+ * Configured game-server origin; empty means the front-end and back-end share one origin.
+ * BUILD-TIME setting: tools/build-frontend.mjs bakes the `BACKEND_ORIGIN` environment
+ * variable into this line when it builds the static site (the source stays '' — the
+ * single-origin default — and the built js/config.js carries the configured origin).
+ */
 export const BACKEND_ORIGIN = '';
 
 /** Query-string parameter that overrides BACKEND_ORIGIN at runtime. */

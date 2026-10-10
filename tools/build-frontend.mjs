@@ -25,6 +25,9 @@
 //   the `?server=` override). The server's own ALLOW_SEPARATE_FRONTEND (default off) is a
 //   separate runtime switch: it decides whether /healthz carries CORS headers. Set '0' at
 //   build time to ship a separation-free build.
+//   BACKEND_ORIGIN (build-time, default ''): the game-server origin the static site talks to
+//   (an http(s) origin, no path) — baked into js/config.js. Unset keeps the single-origin
+//   behaviour (every URL stays on the page's own origin).
 // Unknown options are errors (exit code 2).
 
 import { realpathSync } from 'node:fs';
@@ -32,6 +35,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSeparationEnabled } from '../server/http/config.js';
+import { normalizeOrigin } from '../public/js/config.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const USAGE = 'usage: node tools/build-frontend.mjs [--out <dir>] [--quiet]';
@@ -104,6 +108,28 @@ async function bakeSeparationDefault(configPath, separation) {
     throw new Error(`separation line not found in ${configPath} — update SEPARATION_LINE in tools/build-frontend.mjs`);
   }
   await writeFile(configPath, src.replace(SEPARATION_LINE, `let SEPARATION_ENABLED = ${separation};`));
+}
+
+/**
+ * The line in public/js/config.js whose value the build rewrites to the
+ * build-time BACKEND_ORIGIN ('' for single-origin builds).
+ */
+const BACKEND_ORIGIN_LINE = `export const BACKEND_ORIGIN = '';`;
+
+/**
+ * Bake the build-time BACKEND_ORIGIN into the output's js/config.js, so the
+ * static site talks to the configured game-server origin (build-time
+ * BACKEND_ORIGIN, '' when unset — single-origin).
+ * @param {string} configPath absolute path of the output js/config.js
+ * @param {string} backendOrigin normalised backend origin ('' = single-origin)
+ */
+async function bakeBackendOrigin(configPath, backendOrigin) {
+  let src;
+  try { src = await readFile(configPath, 'utf8'); } catch { throw new Error(`cannot bake BACKEND_ORIGIN: ${configPath} is not readable`); }
+  if (!src.includes(BACKEND_ORIGIN_LINE)) {
+    throw new Error(`BACKEND_ORIGIN line not found in ${configPath} — update BACKEND_ORIGIN_LINE in tools/build-frontend.mjs`);
+  }
+  await writeFile(configPath, src.replace(BACKEND_ORIGIN_LINE, `export const BACKEND_ORIGIN = ${JSON.stringify(backendOrigin)};`));
 }
 
 /**
@@ -199,6 +225,14 @@ export async function buildFrontend(opts = {}) {
   // switch is read from /healthz at page boot.
   const separation = opts.separation ?? parseSeparationEnabled(process.env.ALLOW_SEPARATE_FRONTEND ?? '1');
 
+  // The build-time backend origin (BACKEND_ORIGIN, '' unless set) is baked into the
+  // served config; a non-empty value must be a valid http(s) origin.
+  const rawBackendOrigin = process.env.BACKEND_ORIGIN ?? '';
+  const backendOrigin = normalizeOrigin(rawBackendOrigin);
+  if (rawBackendOrigin.trim() && !backendOrigin) {
+    throw new Error(`BACKEND_ORIGIN must be an http(s) origin: ${rawBackendOrigin}`);
+  }
+
   const missing = [];
   for (const rel of REQUIRED_FILES) {
     try { await stat(join(ROOT, rel)); } catch { missing.push(rel); }
@@ -222,6 +256,9 @@ export async function buildFrontend(opts = {}) {
 
   // Bake the build-time separation default into the served config.
   await bakeSeparationDefault(join(outputDir, 'js', 'config.js'), separation);
+
+  // Bake the build-time backend origin into the served config.
+  await bakeBackendOrigin(join(outputDir, 'js', 'config.js'), backendOrigin);
 
   if (!quiet) console.log(`frontend: ${files} files -> ${outputDir}`);
   return { outputDir, files, counts };

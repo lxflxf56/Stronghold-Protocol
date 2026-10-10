@@ -229,8 +229,8 @@ https / wss 说明：页面通过 https 打开时客户端自动连接 `wss://�
 
 **前端（构建并部署静态站点）：**
 
-1. 编辑 `public/js/config.js`，把 `BACKEND_ORIGIN` 设为后端域名（含协议，如 `https://api.example.com`）；留空则保持单域名行为。
-2. 依次运行：`npm ci` →（需要官方美术 / 音频时）`node tools/setup.mjs` → `node tools/build-frontend.mjs`（生成静态站点，默认输出 `dist/`）。仅前端构建默认烘入前后端分离支持（构建时环境变量 `ALLOW_SEPARATE_FRONTEND`，默认 `1`；设 `0` 可构建不含分离支持的站点）。
+1. 构建时设置环境变量 `BACKEND_ORIGIN=<后端域名>`（含协议，如 `https://api.example.com`；构建时烘入 `js/config.js`，无需再手改该文件）。不设则保持单域名行为。
+2. 依次运行：`npm ci` →（需要官方美术 / 音频时）`node tools/setup.mjs` → `BACKEND_ORIGIN=https://api.example.com node tools/build-frontend.mjs`（生成静态站点，默认输出 `dist/`；未设 `BACKEND_ORIGIN` 时为单域名站点）。仅前端构建默认烘入前后端分离支持（构建时环境变量 `ALLOW_SEPARATE_FRONTEND`，默认 `1`；设 `0` 可构建不含分离支持的站点）。
 3. 把 `dist/` 部署到前端域名：任选静态站点托管平台，站点根目录指向 `dist/`。
 
 **后端（运行前先设置环境变量）：**
