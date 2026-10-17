@@ -21,10 +21,13 @@ review
 logs
 *.log
 docs/img
-# the image needs only the research JSON tables (server/sim/nodeData.js fallback), not the notes
+# the image needs only the research JSON tables (server/sim/nodeData.js fallback), not the notes;
+# the plugin docs and example catalogue are copied for the plugin studio (tools/plugin.mjs)
 docs/*
 !docs/research/
 docs/research/*.md
+!docs/PLUGIN*.md
+!docs/plugin-catalog.example.json
 # game art is mounted at runtime or downloaded with --build-arg FETCH_ASSETS=1, never sent from the host
 public/assets
 # generated from node_modules inside the image
