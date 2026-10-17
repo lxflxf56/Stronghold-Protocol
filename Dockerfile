@@ -35,7 +35,7 @@ COPY public ./public
 COPY plugins ./plugin-resources
 COPY schemas ./schemas
 COPY test/helpers/battleHarness.js ./test/helpers/battleHarness.js
-COPY docs/PLUGIN*.md ./docs/
+COPY docs/PLUGIN*.md docs/plugin-catalog.example.json ./docs/
 COPY docs/research ./docs/research
 RUN node tools/vendor.mjs \
  && if [ "$FETCH_ASSETS" = "1" ]; then \
