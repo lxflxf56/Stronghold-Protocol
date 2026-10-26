@@ -14,7 +14,9 @@ import {
 import { defaultWsUrl, Net } from '../public/js/net.js';
 import { fetchBuild } from '../public/js/ui/buildGuard.js';
 import { parseFrontendOrigin, parseSeparationEnabled, startServer } from '../server/index.js';
+import { DATA_SHIM_JS } from '../server/http/static.js';
 import { buildFrontend, isBrowserSimFile } from '../tools/build-frontend.mjs';
+import { findSpecifiers } from '../tools/check-imports.mjs';
 
 const TEST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -37,6 +39,31 @@ async function listFiles(dir) {
     else if (entry.isFile()) files.push(entry.name);
   }
   return files;
+}
+
+/** Every `.js` of a built site, as site-root-relative POSIX paths (`vendor/` is UMD, not a module tree). */
+async function siteModules(dir, prefix = '') {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (entry.name === 'vendor') continue;
+      files.push(...(await siteModules(join(dir, entry.name), rel)));
+    } else if (entry.isFile() && entry.name.endsWith('.js')) files.push(rel);
+  }
+  return files.sort();
+}
+
+/**
+ * Where a browser puts a module specifier of `fromPath`, as a site-root-relative path.
+ * Resolution is the URL one, so `..` never climbs above the site root (a static host has nothing above it).
+ * @param {string} fromPath the importing file, site-root-relative POSIX
+ * @param {string} spec the import specifier
+ */
+function siteResolve(fromPath, spec) {
+  const base = new URL(fromPath, 'https://site.invalid/');
+  return decodeURIComponent(new URL(spec, base).pathname).replace(/^\//, '');
 }
 
 test('config: an empty BACKEND_ORIGIN keeps every URL on the front-end origin', () => {
@@ -159,6 +186,67 @@ test('static build: output maps public, data, shared and browser-safe sim files'
     assert.ok(simFiles.length > 0);
     assert.ok(simFiles.every((name) => name.toLowerCase().endsWith('.js')));
     assert.ok(!simFiles.some((name) => name.toLowerCase() === 'nodedata.js'));
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('static build: ships the /data.js stand-in byte for byte', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-shim');
+  try {
+    const result = await buildFrontend({ out, quiet: true });
+    // /sim/content/support/index.js reaches the game data through '../../../data.js', which a static host only
+    // answers when the site root carries the stand-in. The bytes are the server's (server/http/static.js), because
+    // the vanilla content hash is computed over them (server/plugins/identity.js) — a rewritten copy would drift.
+    assert.equal(await readFile(join(result.outputDir, 'data.js'), 'utf8'), DATA_SHIM_JS);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('static build: every static relative import of the site resolves to a served file', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-graph');
+  // The two Node-only paths a browser never takes: simdata.js imports ./nodeData.js only under Node (its IS_NODE
+  // guard, the file is excluded from the build), and '../../server/sim/detmath.js' is only sandbox.js' default
+  // loadMath — the browser worker and the sim-check harness both pass their own loader (/sim/detmath.js).
+  const guarded = new Set(['sim/simdata.js\u0000./nodeData.js', 'shared/plugins/sandbox.js\u0000../../server/sim/detmath.js']);
+  try {
+    const result = await buildFrontend({ out, quiet: true });
+    const missing = [];
+    let checked = 0;
+    for (const rel of await siteModules(result.outputDir)) {
+      const specs = findSpecifiers(await readFile(join(result.outputDir, rel), 'utf8'));
+      for (const { spec } of specs) {
+        if (!spec.startsWith('.')) continue;
+        checked++;
+        if (guarded.has(`${rel}\u0000${spec}`)) continue;
+        const target = siteResolve(rel, spec);
+        const info = await stat(join(result.outputDir, target)).catch(() => null);
+        if (!info?.isFile()) missing.push(`${rel} -> ${spec} (as /${target})`);
+      }
+    }
+    assert.ok(checked > 100, `the site graph was walked (${checked} relative specifiers)`);
+    assert.deepEqual(missing, [], 'a dangling import ships as the host 404 page, which the browser refuses on MIME type');
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('static build: the /data.js stand-in is the module the sim content chain imports', async () => {
+  const out = join(TEST_ROOT, 'test', 'e2e', 'out', 'frontend-build-chain');
+  try {
+    const result = await buildFrontend({ out, quiet: true });
+    // The importer's own specifier, resolved as a browser does from the site root: the file the static host must serve.
+    const from = 'sim/content/support/index.js';
+    const target = siteResolve(from, '../../../data.js');
+    assert.equal(target, 'data.js');
+    assert.ok((await stat(join(result.outputDir, target))).isFile(), `/data.js is at the site root (${target})`);
+    // The shipped text is a module of the site: it imports the sim's own data accessor.
+    const shimSrc = await readFile(join(result.outputDir, 'data.js'), 'utf8');
+    const shimSpecs = findSpecifiers(shimSrc).map((s) => s.spec);
+    assert.deepEqual(shimSpecs, ['./sim/simdata.js'], 'the stand-in imports only /sim/simdata.js');
+    assert.ok((await stat(join(result.outputDir, siteResolve('data.js', './sim/simdata.js')))).isFile());
+    assert.match(shimSrc, /export function getData\(\)/);
   } finally {
     await rm(out, { recursive: true, force: true });
   }

@@ -11,6 +11,9 @@
 //   /data/       data/
 //   /shared/     shared/
 //   /sim/        server/sim/*.js, excluding the Node-only nodeData.js
+//   /data.js     the browser stand-in of server/data.js (server/http/static.js DATA_SHIM_JS, written here byte for
+//                 byte): /sim/content/support/index.js imports getData() from '../../../data.js', so a static site
+//                 without that file answers the import with its 404 page and the browser refuses it on MIME type
 //
 // The output is intentionally platform-neutral: no Cloudflare, Wrangler, redirects or host
 // configuration is generated here. Build command, output directory, domains and the tunnel are
@@ -35,6 +38,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSeparationEnabled } from '../server/http/config.js';
+import { DATA_SHIM_JS } from '../server/http/static.js';
 import { normalizeOrigin } from '../public/js/config.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -130,6 +134,17 @@ async function bakeBackendOrigin(configPath, backendOrigin) {
     throw new Error(`BACKEND_ORIGIN line not found in ${configPath} — update BACKEND_ORIGIN_LINE in tools/build-frontend.mjs`);
   }
   await writeFile(configPath, src.replace(BACKEND_ORIGIN_LINE, `export const BACKEND_ORIGIN = ${JSON.stringify(backendOrigin)};`));
+}
+
+/**
+ * Write the browser stand-in of server/data.js at the site root.
+ * The simulation's content modules (/sim/content/support/index.js) reach it as '../../../data.js'; the same text is
+ * what the single-origin server serves at /data.js and what the vanilla content hash is computed over
+ * (server/plugins/identity.js), so it is copied byte for byte rather than rewritten per host.
+ * @param {string} outputDir absolute path of the built site
+ */
+async function writeDataShim(outputDir) {
+  await writeFile(join(outputDir, 'data.js'), DATA_SHIM_JS, 'utf8');
 }
 
 /**
@@ -253,6 +268,9 @@ export async function buildFrontend(opts = {}) {
     counts[mount.source] = count;
     files += count;
   }
+
+  // The browser stand-in of server/data.js (a static host has no server/data.js to serve).
+  await writeDataShim(outputDir);
 
   // Bake the build-time separation default into the served config.
   await bakeSeparationDefault(join(outputDir, 'js', 'config.js'), separation);
